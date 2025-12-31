@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,6 +14,39 @@ import (
 const (
 	maxLogLines = 1000 // 内存中保留的最大日志行数
 )
+
+// sanitizeFilename 清理文件名，移除危险字符
+func sanitizeFilename(name string) string {
+	// 替换路径分隔符
+	name = strings.ReplaceAll(name, string(os.PathSeparator), "_")
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+
+	// 替换其他危险字符
+	dangerous := []string{":", "*", "?", "\"", "<", ">", "|", " ", "&", ";", "(", ")", "$", "`", "{" ,"}", "[" ,"]"}
+	for _, char := range dangerous {
+		name = strings.ReplaceAll(name, char, "_")
+	}
+
+	// 移除连续的下划线
+	for strings.Contains(name, "__") {
+		name = strings.ReplaceAll(name, "__", "_")
+	}
+
+	// 移除首尾下划线
+	name = strings.Trim(name, "_")
+
+	// 限制长度
+	if len(name) > 100 {
+		name = name[:100]
+	}
+
+	if name == "" {
+		name = "unknown"
+	}
+
+	return name
+}
 
 // LogEntry 日志条目
 type LogEntry struct {
@@ -29,6 +63,7 @@ type Logger struct {
 	logDir     string
 	appName    string
 	maxLines   int
+	done       chan struct{} // 用于控制捕获 goroutine 退出
 }
 
 // NewLogger 创建日志管理器
@@ -38,6 +73,7 @@ func NewLogger(logDir, appName string) *Logger {
 		logDir:   logDir,
 		appName:  appName,
 		maxLines: maxLogLines,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -71,8 +107,18 @@ func (l *Logger) Stop() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// 关闭 done channel，通知捕获 goroutine 退出
+	select {
+	case <-l.done:
+		// 已经关闭
+	default:
+		close(l.done)
+	}
+
 	if l.logFile != nil {
-		return l.logFile.Close()
+		err := l.logFile.Close()
+		l.logFile = nil
+		return err
 	}
 	return nil
 }
@@ -103,6 +149,7 @@ func (l *Logger) WriteLog(logType, message string) {
 			entry.Type,
 			entry.Message)
 		l.logFile.WriteString(line)
+		l.logFile.Sync()
 	}
 }
 
@@ -135,8 +182,18 @@ func (l *Logger) GetAllLogs() []LogEntry {
 // CaptureOutput 捕获进程输出
 func (l *Logger) CaptureOutput(reader io.Reader, logType string) {
 	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		l.WriteLog(logType, scanner.Text())
+	for {
+		select {
+		case <-l.done:
+			// 收到停止信号，退出
+			return
+		default:
+			if !scanner.Scan() {
+				// 读取结束或出错
+				return
+			}
+			l.WriteLog(logType, scanner.Text())
+		}
 	}
 }
 

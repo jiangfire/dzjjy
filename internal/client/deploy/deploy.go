@@ -29,6 +29,33 @@ func NewClient(serverURL, token string) *Client {
 	}
 }
 
+// doRequest 执行 HTTP 请求并解析响应（公共方法，消除重复）
+func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result api.Response
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !result.Success {
+		return nil, fmt.Errorf("request failed: %s", result.Message)
+	}
+
+	return &result, nil
+}
+
 // Deploy 部署应用
 func (c *Client) Deploy(filePath, appType, executable, entry, args string, autoRestart bool, maxRestarts int) error {
 	// 打开文件
@@ -101,82 +128,23 @@ func (c *Client) Deploy(filePath, appType, executable, entry, args string, autoR
 // Stop 停止应用
 func (c *Client) Stop() error {
 	url := c.serverURL + "/api/v1/stop"
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if !result.Success {
-		return fmt.Errorf("stop failed: %s", result.Message)
-	}
-
-	return nil
+	_, err := c.doRequest("POST", url, nil)
+	return err
 }
 
 // Restart 重启应用
 func (c *Client) Restart() error {
 	url := c.serverURL + "/api/v1/restart"
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if !result.Success {
-		return fmt.Errorf("restart failed: %s", result.Message)
-	}
-
-	return nil
+	_, err := c.doRequest("POST", url, nil)
+	return err
 }
 
 // Logs 查询日志
 func (c *Client) Logs(lines int) ([]map[string]any, error) {
 	url := fmt.Sprintf("%s/api/v1/logs?lines=%d", c.serverURL, lines)
-	req, err := http.NewRequest("GET", url, nil)
+	result, err := c.doRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if !result.Success {
-		return nil, fmt.Errorf("logs query failed: %s", result.Message)
+		return nil, err
 	}
 
 	// 解析日志数据
@@ -209,26 +177,9 @@ func (c *Client) Logs(lines int) ([]map[string]any, error) {
 // Status 查询状态
 func (c *Client) Status() (*api.StatusResponse, error) {
 	url := c.serverURL + "/api/v1/status"
-	req, err := http.NewRequest("GET", url, nil)
+	result, err := c.doRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if !result.Success {
-		return nil, fmt.Errorf("status query failed: %s", result.Message)
+		return nil, err
 	}
 
 	// 将data转换为StatusResponse

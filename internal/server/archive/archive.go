@@ -12,6 +12,36 @@ import (
 	"strings"
 )
 
+// safeExtractPath 验证并返回安全的解压路径
+func safeExtractPath(destDir, entryPath string) (string, error) {
+	// 获取目标目录的绝对路径
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path for dest dir: %w", err)
+	}
+
+	// 构建完整的目标路径
+	destPath := filepath.Join(destDir, entryPath)
+
+	// 获取目标路径的绝对路径
+	absDestPath, err := filepath.Abs(destPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// 验证目标路径在目标目录内
+	if !strings.HasPrefix(absDestPath, absDestDir+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid file path: %s (path traversal detected)", entryPath)
+	}
+
+	// 检查符号链接（防止通过符号链接逃逸）
+	if info, err := os.Lstat(destPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("symbolic links not allowed: %s", entryPath)
+	}
+
+	return destPath, nil
+}
+
 // Extract 解压缩文件到指定目录
 func Extract(archivePath, destDir string) error {
 	ext := strings.ToLower(filepath.Ext(archivePath))
@@ -46,24 +76,38 @@ func extractZip(archivePath, destDir string) error {
 	}
 	defer r.Close()
 
+	var invalidPaths []string
+	successCount := 0
+
 	for _, f := range r.File {
-		if err := extractZipFile(f, destDir); err != nil {
+		err := extractZipFile(f, destDir)
+		if err != nil {
+			// 检查是否是路径遍历错误
+			if strings.Contains(err.Error(), "path traversal") {
+				invalidPaths = append(invalidPaths, f.Name)
+				slog.Warn("skipping invalid path", "path", f.Name, "error", err)
+				continue
+			}
 			return err
 		}
+		successCount++
 	}
 
-	slog.Info("zip extraction completed", "files", len(r.File))
+	// 如果有无效路径，返回警告信息
+	if len(invalidPaths) > 0 {
+		return fmt.Errorf("extraction completed with %d invalid paths (path traversal detected): %v", len(invalidPaths), invalidPaths)
+	}
+
+	slog.Info("zip extraction completed", "files", successCount)
 	return nil
 }
 
 // extractZipFile 解压单个 ZIP 文件
 func extractZipFile(f *zip.File, destDir string) error {
-	// 构建目标路径
-	destPath := filepath.Join(destDir, f.Name)
-
-	// 防止路径穿越攻击
-	if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-		return fmt.Errorf("invalid file path: %s", f.Name)
+	// 使用安全路径验证
+	destPath, err := safeExtractPath(destDir, f.Name)
+	if err != nil {
+		return err
 	}
 
 	// 如果是目录
@@ -129,6 +173,8 @@ func extractTar(archivePath, destDir string) error {
 // extractTarReader 从 tar.Reader 解压文件
 func extractTarReader(tr *tar.Reader, destDir string) error {
 	count := 0
+	var invalidPaths []string
+
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -138,12 +184,11 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 			return fmt.Errorf("failed to read tar: %w", err)
 		}
 
-		// 构建目标路径
-		destPath := filepath.Join(destDir, header.Name)
-
-		// 防止路径穿越攻击
-		if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			slog.Warn("skipping invalid path", "path", header.Name)
+		// 使用安全路径验证
+		destPath, err := safeExtractPath(destDir, header.Name)
+		if err != nil {
+			invalidPaths = append(invalidPaths, header.Name)
+			slog.Warn("skipping invalid path", "path", header.Name, "error", err)
 			continue
 		}
 
@@ -182,6 +227,11 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 		}
 	}
 
+	// 如果有无效路径，返回警告信息
+	if len(invalidPaths) > 0 {
+		return fmt.Errorf("extraction completed with %d invalid paths (path traversal detected): %v", len(invalidPaths), invalidPaths)
+	}
+
 	slog.Info("tar extraction completed", "files", count)
 	return nil
 }
@@ -201,7 +251,13 @@ func extractGzip(archivePath, destDir string) error {
 	defer gzr.Close()
 
 	// 目标文件名（去掉 .gz 扩展名）
-	destPath := filepath.Join(destDir, strings.TrimSuffix(filepath.Base(archivePath), ".gz"))
+	entryPath := strings.TrimSuffix(filepath.Base(archivePath), ".gz")
+
+	// 使用安全路径验证
+	destPath, err := safeExtractPath(destDir, entryPath)
+	if err != nil {
+		return err
+	}
 
 	destFile, err := os.Create(destPath)
 	if err != nil {

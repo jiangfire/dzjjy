@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jiangfire/dzjjy/internal/server/archive"
 	"github.com/jiangfire/dzjjy/internal/server/runtime"
@@ -56,8 +57,38 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(mr, "%d", &maxRestarts)
 	}
 
+	// 输入验证
 	if appType == "" || executable == "" {
 		h.sendError(w, "type and executable are required", http.StatusBadRequest)
+		return
+	}
+
+	// 验证应用类型
+	if appType != runtime.TypeExec && appType != runtime.TypeRuntime {
+		h.sendError(w, fmt.Sprintf("invalid type: %s (must be 'exec' or 'runtime')", appType), http.StatusBadRequest)
+		return
+	}
+
+	// 验证可执行文件（非空且不含危险字符）
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		h.sendError(w, "executable cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if strings.ContainsAny(executable, "|;&`$()<>[]{}") {
+		h.sendError(w, "executable contains invalid characters", http.StatusBadRequest)
+		return
+	}
+
+	// 验证重启次数
+	if maxRestarts < 0 {
+		h.sendError(w, "max_restarts cannot be negative", http.StatusBadRequest)
+		return
+	}
+
+	// runtime 类型必须有 entry
+	if appType == runtime.TypeRuntime && entry == "" {
+		h.sendError(w, "entry is required for runtime type", http.StatusBadRequest)
 		return
 	}
 
@@ -87,6 +118,21 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// 验证文件名
+	if header.Filename == "" {
+		h.sendError(w, "filename cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if len(header.Filename) > 255 {
+		h.sendError(w, "filename too long", http.StatusBadRequest)
+		return
+	}
+	// 检查文件名中的危险字符
+	if strings.ContainsAny(header.Filename, ":\\<>|\"*?") {
+		h.sendError(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+
 	// 保存到工作目录
 	destPath := filepath.Join(h.workDir, header.Filename)
 	dest, err := os.Create(destPath)
@@ -114,16 +160,21 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 				"file", header.Filename,
 			)
+			// 解压失败，清理已解压的文件
+			os.RemoveAll(h.workDir)
+			os.MkdirAll(h.workDir, 0755)
 			h.sendError(w, fmt.Sprintf("failed to extract archive: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		// 删除压缩文件
+		// 删除压缩文件（失败则返回错误）
 		if err := os.Remove(destPath); err != nil {
-			slog.Warn("failed to remove archive file",
+			slog.Error("failed to remove archive file",
 				"error", err,
 				"file", destPath,
 			)
+			h.sendError(w, fmt.Sprintf("failed to remove archive file: %v", err), http.StatusInternalServerError)
+			return
 		}
 
 		slog.Info("archive extracted successfully", "file", header.Filename)
@@ -175,6 +226,41 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 	var req api.DeployRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 输入验证
+	if req.Type == "" || req.Executable == "" {
+		h.sendError(w, "type and executable are required", http.StatusBadRequest)
+		return
+	}
+
+	// 验证应用类型
+	if req.Type != runtime.TypeExec && req.Type != runtime.TypeRuntime {
+		h.sendError(w, fmt.Sprintf("invalid type: %s (must be 'exec' or 'runtime')", req.Type), http.StatusBadRequest)
+		return
+	}
+
+	// 验证可执行文件
+	req.Executable = strings.TrimSpace(req.Executable)
+	if req.Executable == "" {
+		h.sendError(w, "executable cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if strings.ContainsAny(req.Executable, "|;&`$()<>[]{}") {
+		h.sendError(w, "executable contains invalid characters", http.StatusBadRequest)
+		return
+	}
+
+	// 验证重启次数
+	if req.MaxRestarts < 0 {
+		h.sendError(w, "max_restarts cannot be negative", http.StatusBadRequest)
+		return
+	}
+
+	// runtime 类型必须有 entry
+	if req.Type == runtime.TypeRuntime && req.Entry == "" {
+		h.sendError(w, "entry is required for runtime type", http.StatusBadRequest)
 		return
 	}
 

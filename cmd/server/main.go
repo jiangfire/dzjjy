@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jiangfire/dzjjy/internal/server/auth"
 	"github.com/jiangfire/dzjjy/internal/server/handler"
@@ -70,7 +71,16 @@ func main() {
 		"log_dir", *logDir,
 	)
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	// 配置带超时的 HTTP 服务器
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      nil,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}

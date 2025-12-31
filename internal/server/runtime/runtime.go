@@ -77,8 +77,9 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 	m.restartCount = 0
 	m.running = true
 
-	// 创建日志管理器
-	appName := fmt.Sprintf("%s-%s", appType, executable)
+	// 创建日志管理器（使用安全的文件名）
+	safeExecutable := sanitizeFilename(executable)
+	appName := fmt.Sprintf("%s-%s", appType, safeExecutable)
 	m.logger = NewLogger(m.logDir, appName)
 	if err := m.logger.Start(); err != nil {
 		m.running = false
@@ -191,75 +192,92 @@ func (m *Manager) monitor() {
 			// 收到停止信号，退出监控
 			return
 		default:
-			// 等待进程退出
-			if m.cmd != nil && m.cmd.Process != nil {
-				err := m.cmd.Wait()
+			// 在锁外获取当前状态，避免长时间持有锁
+			m.mu.RLock()
+			cmd := m.cmd
+			running := m.running
+			config := m.config
+			m.mu.RUnlock()
 
-				m.mu.Lock()
-				if !m.running {
-					// 已经被手动停止，不再重启
-					m.mu.Unlock()
-					return
-				}
-
-				// 检查是否需要重启
-				if m.config.MaxRestarts > 0 && m.restartCount >= m.config.MaxRestarts {
-					slog.Warn("process reached max restart limit",
-						"max_restarts", m.config.MaxRestarts,
-						"executable", m.config.Executable,
-					)
-					if m.logger != nil {
-						msg := fmt.Sprintf("Process exited and reached max restart limit (%d)", m.config.MaxRestarts)
-						m.logger.WriteLog("system", msg)
-					}
-					m.running = false
-					m.mu.Unlock()
-					return
-				}
-
-				// 进程异常退出，准备重启
-				m.restartCount++
-				slog.Warn("process exited, restarting",
-					"error", err,
-					"attempt", m.restartCount,
-					"executable", m.config.Executable,
-				)
-				if m.logger != nil {
-					msg := fmt.Sprintf("Process exited with error: %v, restarting... (attempt %d)", err, m.restartCount)
-					m.logger.WriteLog("system", msg)
-				}
-
-				// 等待一小段时间再重启，避免快速失败循环
-				time.Sleep(1 * time.Second)
-
-				// 重启进程
-				if err := m.startProcess(); err != nil {
-					slog.Error("failed to restart process",
-						"error", err,
-						"executable", m.config.Executable,
-					)
-					if m.logger != nil {
-						msg := fmt.Sprintf("Failed to restart process: %v", err)
-						m.logger.WriteLog("system", msg)
-					}
-					m.running = false
-					m.mu.Unlock()
-					return
-				}
-				m.mu.Unlock()
-			} else {
-				// 进程不存在，退出监控
+			// 检查是否应该继续监控
+			if !running || cmd == nil || cmd.Process == nil {
 				return
 			}
+
+			// 等待进程退出（阻塞操作，不持有锁）
+			err := cmd.Wait()
+
+			// 进程已退出，重新获取锁检查状态
+			m.mu.Lock()
+
+			// 检查是否已经被手动停止
+			if !m.running {
+				m.mu.Unlock()
+				return
+			}
+
+			// 检查是否需要重启
+			if config.MaxRestarts > 0 && m.restartCount >= config.MaxRestarts {
+				slog.Warn("process reached max restart limit",
+					"max_restarts", config.MaxRestarts,
+					"executable", config.Executable,
+				)
+				if m.logger != nil {
+					msg := fmt.Sprintf("Process exited and reached max restart limit (%d)", config.MaxRestarts)
+					m.logger.WriteLog("system", msg)
+				}
+				m.running = false
+				m.mu.Unlock()
+				return
+			}
+
+			// 进程异常退出，准备重启
+			m.restartCount++
+			slog.Warn("process exited, restarting",
+				"error", err,
+				"attempt", m.restartCount,
+				"executable", config.Executable,
+			)
+			if m.logger != nil {
+				msg := fmt.Sprintf("Process exited with error: %v, restarting... (attempt %d)", err, m.restartCount)
+				m.logger.WriteLog("system", msg)
+			}
+
+			// 等待一小段时间再重启，避免快速失败循环
+			time.Sleep(1 * time.Second)
+
+			// 重启进程（在锁保护下）
+			if err := m.startProcess(); err != nil {
+				slog.Error("failed to restart process",
+					"error", err,
+					"executable", config.Executable,
+				)
+				if m.logger != nil {
+					msg := fmt.Sprintf("Failed to restart process: %v", err)
+					m.logger.WriteLog("system", msg)
+				}
+				m.running = false
+				m.mu.Unlock()
+				return
+			}
+			m.mu.Unlock()
 		}
 	}
 }
 
 // waitProcess 等待进程退出（不重启）
 func (m *Manager) waitProcess() {
-	if m.cmd != nil && m.cmd.Process != nil {
-		pid := m.cmd.Process.Pid
-		m.cmd.Wait()
+	// 在锁外获取命令引用
+	m.mu.RLock()
+	cmd := m.cmd
+	m.mu.RUnlock()
+
+	if cmd != nil && cmd.Process != nil {
+		pid := cmd.Process.Pid
+		// 等待进程退出（阻塞操作，不持有锁）
+		cmd.Wait()
+
+		// 进程已退出，更新状态
 		m.mu.Lock()
 		m.running = false
 		slog.Info("process exited", "pid", pid)
