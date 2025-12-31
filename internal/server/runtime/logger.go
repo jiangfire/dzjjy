@@ -60,6 +60,7 @@ type Logger struct {
 	mu         sync.RWMutex
 	logs       []LogEntry
 	logFile    *os.File
+	logPath    string // 存储日志文件路径，即使文件已关闭
 	logDir     string
 	appName    string
 	maxLines   int
@@ -87,9 +88,12 @@ func (l *Logger) Start() error {
 		return fmt.Errorf("failed to create log dir: %w", err)
 	}
 
+	// 清理应用名，移除危险字符
+	safeAppName := sanitizeFilename(l.appName)
+
 	// 创建日志文件
 	timestamp := time.Now().Format("20060102-150405")
-	logPath := filepath.Join(l.logDir, fmt.Sprintf("%s-%s.log", l.appName, timestamp))
+	logPath := filepath.Join(l.logDir, fmt.Sprintf("%s-%s.log", safeAppName, timestamp))
 
 	file, err := os.Create(logPath)
 	if err != nil {
@@ -97,6 +101,7 @@ func (l *Logger) Start() error {
 	}
 
 	l.logFile = file
+	l.logPath = logPath
 	l.logs = make([]LogEntry, 0, maxLogLines)
 
 	return nil
@@ -202,8 +207,5 @@ func (l *Logger) GetLogFile() string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	if l.logFile != nil {
-		return l.logFile.Name()
-	}
-	return ""
+	return l.logPath
 }

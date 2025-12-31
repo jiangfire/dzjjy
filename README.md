@@ -402,11 +402,21 @@ dzjjy/
 │   ├── server/
 │   │   ├── handler/     # HTTP 处理器
 │   │   ├── runtime/     # 运行时管理
+│   │   │   ├── runtime.go
+│   │   │   └── logger_test.go
 │   │   └── auth/        # 认证模块
+│   │       └── auth_test.go
 │   └── client/
 │       └── deploy/      # 部署逻辑
 ├── pkg/
 │   └── api/             # API 定义
+├── docs/                # 文档
+│   ├── README.md        # 文档索引
+│   ├── TESTING.md       # 测试指南
+│   ├── COVERAGE.md      # 覆盖率报告
+│   └── TEST_GUIDE.md    # 测试编写指南
+├── test/                # 测试工具
+│   └── helpers.go       # 测试辅助函数
 └── config/              # 配置示例
 ```
 
@@ -503,6 +513,96 @@ dzjjy/
 6. 进程崩溃后会等待 1 秒再重启，这是为了避免快速失败循环
 7. 日志文件会持续增长，建议定期清理旧日志
 8. 内存中只保留最近 1000 行日志，更早的日志需要查看日志文件
+
+## 测试
+
+本项目包含全面的单元测试和集成测试，确保代码质量和可靠性。
+
+### 测试覆盖
+
+| 模块 | 测试文件 | 测试用例数 | 覆盖率 |
+|------|---------|-----------|--------|
+| Archive (归档处理) | `internal/server/archive/archive_test.go` | 18 | 81.1% |
+| Auth (认证) | `internal/server/auth/auth_test.go` | 14 | 100% |
+| Runtime Logger (日志管理) | `internal/server/runtime/logger_test.go` | 16 | 100% |
+| Runtime Manager (进程管理) | `internal/runtime/runtime_test.go` | 14 | 全面测试 |
+
+**总测试用例：62+**
+
+### 运行测试
+
+```bash
+# 运行所有测试
+go test ./...
+
+# 运行特定模块测试
+go test ./internal/server/archive/...
+go test ./internal/server/auth/...
+go test ./internal/server/runtime/...
+go test ./internal/runtime/...
+
+# 查看测试覆盖率
+go test -cover ./internal/server/...
+
+# 生成详细覆盖率报告
+go test -coverprofile=coverage.out ./internal/server/...
+go tool cover -html=coverage.out
+```
+
+## 📚 详细文档
+
+所有项目文档已整理至 `docs/` 文件夹：
+
+### 📖 项目文档
+- **[docs/PROJECT_PROMPT.md](docs/PROJECT_PROMPT.md)** - 项目需求文档和功能说明
+- **[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)** - 实现计划和架构设计
+- **[docs/PLAN.md](docs/PLAN.md)** - 复杂系统实现计划（多应用、持久化、插件系统）
+
+### 🧪 测试文档
+- **[docs/TESTING.md](docs/TESTING.md)** - 完整的测试覆盖和运行指南
+- **[docs/COVERAGE.md](docs/COVERAGE.md)** - 详细的覆盖率报告
+- **[docs/TEST_GUIDE.md](docs/TEST_GUIDE.md)** - 如何编写高质量测试
+
+### 📋 文档索引
+- **[docs/README.md](docs/README.md)** - 文档导航和概览
+
+---
+
+## 🧪 测试特性概览
+
+**Archive 模块测试：**
+- ✅ ZIP/TAR/TAR.GZ/GZ 格式解压
+- ✅ 路径遍历攻击防护
+- ✅ 恶意文件检测
+- ✅ 空压缩包处理
+- ✅ 大文件处理
+
+**Auth 模块测试：**
+- ✅ 认证成功/失败场景
+- ✅ 各种错误的 Authorization 头格式
+- ✅ 时序攻击防护验证
+- ✅ 多请求并发处理
+
+**Logger 模块测试：**
+- ✅ 启动/停止生命周期
+- ✅ 日志写入和读取
+- ✅ 内存限制（1000 行）
+- ✅ 并发写入安全
+- ✅ 文件名清理（防路径遍历）
+
+**Runtime Manager 测试：**
+- ✅ 进程启动/停止
+- ✅ 自动重启（带次数限制）
+- ✅ 并发操作安全
+- ✅ 重启功能
+
+### 测试工具
+
+使用 [testify](https://github.com/stretchr/testify) 提供：
+- `require` - 失败即停止的断言
+- `assert` - 失败继续的断言
+
+详见 [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md)
 
 ## 许可证
 
