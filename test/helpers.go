@@ -3,7 +3,6 @@ package test
 import (
 	"archive/zip"
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
