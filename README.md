@@ -1,342 +1,145 @@
 # dzjjy - 简易部署服务
 
-一个用于开发环境的快速部署工具，支持将应用快速部署到远程服务器，自动停止旧服务并启动新服务。
+> 用于开发环境的快速部署工具，类似 PM2 的进程守护管理器
 
-## 特性
-
-- **进程守护**：类似 PM2，支持进程崩溃自动重启，保持应用 24/7 运行
-- **简单分类**：只区分两种程序类型（可执行程序和需要运行时的程序）
-- **自动重启**：可配置最大重启次数，防止无限重启循环
-- **进程监控**：实时监控进程状态、运行时间、重启次数
-- **压缩文件支持**：支持 ZIP、TAR、TAR.GZ 格式，自动解压缩
-- **简单认证**：基于 Token 的简单认证机制
-- **RESTful API**：清晰的 HTTP API 接口
-- **命令行工具**：易用的客户端命令行工具
-- **结构化日志**：使用 slog 记录结构化日志，便于问题排查
-- **Go 优势**：充分利用 Go 的 goroutine 和 context 实现高效的进程管理
-- **Unix 哲学**：简单、模块化、可扩展
+**核心功能**：
+- ✅ 进程守护（自动重启、崩溃恢复）
+- ✅ 文件部署（支持 ZIP/TAR/GZ 自动解压）
+- ✅ 日志管理（内存缓存 + 文件持久化 + 自动轮转）
+- ✅ 状态持久化（自动恢复、原子写入）
+- ✅ Token 认证（简单安全）
 
 ## 快速开始
 
-### 1. 编译
+### 1. 编译和启动
 
 ```bash
-# 编译服务端
+# 编译
 go build -o dzjjy-server ./cmd/server
-
-# 编译客户端
 go build -o dzjjy-client ./cmd/client
+
+# 启动服务端（推荐启用状态持久化）
+./dzjjy-server -token your-secret-token -port 8080 -state ./state.json
 ```
 
-### 2. 启动服务端
+**参数**：
+- `-token`：认证令牌（必需）
+- `-port`：服务端口（默认 8080）
+- `-state`：状态持久化文件（可选，启用后可自动恢复）
+
+### 2. 部署应用
+
+#### 应用类型
+
+**exec** - 直接可执行文件
+```bash
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -file myapp -type exec -executable ./myapp
+```
+
+**runtime** - 需要运行时
+```bash
+# Python
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -file app.py -type runtime -executable python3 -entry app.py
+
+# Node.js（带参数）
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -file app.js -type runtime -executable node -entry "index.js --port 3000"
+
+# Java JAR
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -file app.jar -type runtime -executable java -entry "-jar app.jar" -args "--server.port=8080"
+```
+
+**参数说明**：
+- `executable`：运行时命令或可执行文件
+- `entry`：入口文件（可包含运行时参数）
+- `args`：应用参数（可选）
+- `auto_restart`：是否自动重启
+- `max_restarts`：最大重启次数（0=无限）
+
+#### 进程守护
 
 ```bash
-./dzjjy-server -token your-secret-token -port 8080
+# 自动重启（无限次）
+./dzjjy-client deploy ... -auto-restart -max-restarts 0
+
+# 自动重启（最多10次）
+./dzjjy-client deploy ... -auto-restart -max-restarts 10
 ```
 
-参数说明：
-- `-token`: 认证令牌（必需）
-- `-port`: 服务端口（默认：8080）
-- `-upload`: 上传目录（默认：./uploads）
-- `-work`: 工作目录（默认：./workspace）
+#### 压缩文件部署
 
-### 3. 使用客户端部署
-
-#### 部署应用
-
-**类型 1：可执行程序（exec）**
-
-直接运行的可执行文件，如编译好的二进制程序、shell 脚本等。
+支持：`.zip`, `.tar`, `.tar.gz`, `.gz`
 
 ```bash
-# 部署可执行程序（如编译好的 Go 程序）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file myapp \
-  -type exec \
-  -executable ./myapp
-
-# 部署 shell 脚本
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file start.sh \
-  -type exec \
-  -executable ./start.sh
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -file app.zip -type runtime -executable python3 -entry app.py
 ```
 
-**类型 2：需要运行时的程序（runtime）**
+**工作流程**：上传 → 自动检测格式 → 解压到工作目录 → 删除压缩包 → 启动应用
 
-需要通过解释器或运行时执行的程序，如 Python、NodeJS、Java 等。
-
-**重要说明：** `entry` 字段可以包含多个空格分隔的参数，用于指定运行时参数和入口文件。
-
-**参数顺序：** `executable` → `entry`（运行时参数 + 入口文件） → `args`（应用参数）
+#### 其他操作
 
 ```bash
-# 部署 Python 应用
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.py \
-  -type runtime \
-  -executable python3 \
-  -entry app.py
+# 查询状态
+./dzjjy-client status -server http://localhost:8080 -token your-token
 
-# 部署 Python 模块（使用 -m 参数）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.zip \
-  -type runtime \
-  -executable python3 \
-  -entry "-m uvicorn main:app" \
-  -args "--host 0.0.0.0 --port 8000"
-# 最终命令：python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+# 重启应用
+./dzjjy-client restart -server http://localhost:8080 -token your-token
 
-# 部署 NodeJS 应用
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.js \
-  -type runtime \
-  -executable node \
-  -entry app.js
+# 停止应用
+./dzjjy-client stop -server http://localhost:8080 -token your-token
 
-# 部署 NodeJS 应用（带运行时参数）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.js \
-  -type runtime \
-  -executable node \
-  -entry "--experimental-modules index.js" \
-  -args "--port 3000"
-# 最终命令：node --experimental-modules index.js --port 3000
-
-# 部署 Java 应用（简单情况）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.jar \
-  -type runtime \
-  -executable java \
-  -entry "-jar app.jar"
-# 最终命令：java -jar app.jar
-
-# 部署 Java Spring Boot 应用（带配置参数）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.jar \
-  -type runtime \
-  -executable java \
-  -entry "-jar app.jar" \
-  -args "--spring.profiles.active=prod --server.port=9090"
-# 最终命令：java -jar app.jar --spring.profiles.active=prod --server.port=9090
-
-# 部署 Go 源码（使用 go run）
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file main.go \
-  -type runtime \
-  -executable go \
-  -entry "run main.go"
-# 最终命令：go run main.go
-```
-
-**启用进程守护（自动重启）**
-
-```bash
-# 启用自动重启，无限次重启
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.py \
-  -type runtime \
-  -executable python3 \
-  -entry app.py \
-  -auto-restart \
-  -max-restarts 0
-
-# 启用自动重启，最多重启 10 次
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file app.js \
-  -type runtime \
-  -executable node \
-  -entry app.js \
-  -auto-restart \
-  -max-restarts 10
-```
-
-**部署压缩文件（自动解压）**
-
-支持的压缩格式：`.zip`、`.tar`、`.tar.gz`、`.gz`
-
-```bash
-# 部署 ZIP 压缩包
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file myapp.zip \
-  -type runtime \
-  -executable python3 \
-  -entry app.py \
-  -auto-restart
-
-# 部署 TAR.GZ 压缩包
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file myapp.tar.gz \
-  -type runtime \
-  -executable node \
-  -entry index.js
-
-# 部署 TAR 压缩包
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -file myapp.tar \
-  -type exec \
-  -executable ./start.sh
-```
-
-**工作原理：**
-1. 上传压缩文件到服务器
-2. 服务器自动检测文件格式（根据扩展名）
-3. 自动解压到工作目录
-4. 删除压缩文件
-5. 使用指定的命令启动应用
-
-**注意事项：**
-- 压缩包内的文件会被解压到工作目录的根目录
-- `entry` 参数应该是解压后的相对路径
-- 确保压缩包内包含所有必要的依赖文件
-
-#### 查询状态
-
-```bash
-./dzjjy-client status \
-  -server http://localhost:8080 \
-  -token your-secret-token
-```
-
-输出示例：
-```
-Running: true
-PID: 12345
-Type: runtime
-Executable: python3
-Entry: app.py
-Auto Restart: true
-Restart Count: 2
-Uptime: 3600 seconds
-```
-
-#### 重启应用
-
-```bash
-./dzjjy-client restart \
-  -server http://localhost:8080 \
-  -token your-secret-token
-```
-
-#### 停止应用
-
-```bash
-./dzjjy-client stop \
-  -server http://localhost:8080 \
-  -token your-secret-token
-```
-
-#### 查看日志
-
-```bash
-# 查看最近 100 行日志（默认）
-./dzjjy-client logs \
-  -server http://localhost:8080 \
-  -token your-secret-token
-
-# 查看最近 50 行日志
-./dzjjy-client logs \
-  -server http://localhost:8080 \
-  -token your-secret-token \
-  -lines 50
-```
-
-输出示例：
-```
-[2025-11-29T18:45:23Z] [system] Starting application: type=runtime, executable=python3, entry=app.py
-[2025-11-29T18:45:23Z] [system] Process started: PID=12345
-[2025-11-29T18:45:24Z] [stdout] Server starting on port 8000
-[2025-11-29T18:45:24Z] [stdout] Ready to accept connections
-[2025-11-29T18:46:30Z] [stderr] Warning: deprecated API usage
-
-Total: 5 lines
+# 查看日志（默认100行）
+./dzjjy-client logs -server http://localhost:8080 -token your-token
+# 指定行数
+./dzjjy-client logs -server http://localhost:8080 -token your-token -lines 50
 ```
 
 ## API 接口
 
-### 部署应用
+所有接口需要 `Authorization: Bearer <token>` 头（除 `/health`）。
 
+| 方法 | 路径 | 说明 | 请求体 |
+|------|------|------|--------|
+| `POST` | `/api/v1/deploy` | 部署应用 | multipart/form-data |
+| `POST` | `/api/v1/start` | 启动应用 | JSON |
+| `POST` | `/api/v1/stop` | 停止应用 | - |
+| `POST` | `/api/v1/restart` | 重启应用 | - |
+| `GET` | `/api/v1/status` | 查询状态 | - |
+| `GET` | `/api/v1/logs?lines=N` | 查询日志 | - |
+| `GET` | `/health` | 健康检查 | - |
+
+### 部署请求示例
+
+**multipart/form-data**:
 ```
-POST /api/v1/deploy
-Authorization: Bearer <token>
-Content-Type: multipart/form-data
-
-参数：
-- file: 应用文件（必需）
-- type: 程序类型，exec 或 runtime（必需）
-- executable: 可执行程序路径或运行时命令（必需）
-- entry: 入口文件（runtime 类型需要）
-- args: 启动参数（可选）
-- auto_restart: 是否启用自动重启，true 或 false（可选，默认 false）
-- max_restarts: 最大重启次数，0 表示无限制（可选，默认 0）
-```
-
-### 停止应用
-
-```
-POST /api/v1/stop
-Authorization: Bearer <token>
-```
-
-### 重启应用
-
-```
-POST /api/v1/restart
-Authorization: Bearer <token>
+file: 应用文件
+type: exec | runtime
+executable: 命令或路径
+entry: 入口文件（runtime需要）
+args: 启动参数（可选）
+auto_restart: true | false
+max_restarts: 0（无限）或正整数
 ```
 
-### 启动应用
-
-```
-POST /api/v1/start
-Authorization: Bearer <token>
-Content-Type: application/json
-
+**JSON (POST /api/v1/start)**:
+```json
 {
   "type": "runtime",
   "executable": "python3",
   "entry": "app.py",
-  "args": "",
+  "args": "--port 8000",
   "auto_restart": true,
   "max_restarts": 10
 }
 ```
 
-### 查询状态
+### 状态响应示例
 
-```
-GET /api/v1/status
-Authorization: Bearer <token>
-
-响应示例：
+```json
 {
   "success": true,
   "message": "ok",
@@ -353,268 +156,40 @@ Authorization: Bearer <token>
 }
 ```
 
-### 查询日志
+## 📚 文档
 
-```
-GET /api/v1/logs?lines=100
-Authorization: Bearer <token>
+| 文档 | 说明 |
+|------|------|
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | 架构设计、模块结构、核心概念 |
+| **[docs/TESTING.md](docs/TESTING.md)** | 测试指南、覆盖率、最佳实践 |
 
-参数：
-- lines: 返回的日志行数（可选，默认 100）
+## 🔧 未来规划
 
-响应示例：
-{
-  "success": true,
-  "message": "ok",
-  "data": {
-    "logs": [
-      {
-        "timestamp": "2025-11-29T18:45:23Z",
-        "type": "system",
-        "message": "Process started: PID=12345"
-      },
-      {
-        "timestamp": "2025-11-29T18:45:24Z",
-        "type": "stdout",
-        "message": "Server starting on port 8000"
-      }
-    ],
-    "log_file": "/path/to/logs/app-20251129-184523.log",
-    "count": 2
-  }
-}
-```
+| 功能 | 优先级 | 说明 |
+|------|--------|------|
+| **多应用管理** | 🔴 高 | 支持同时管理多个应用 |
+| **插件系统** | 🟡 中 | 可扩展的插件机制（Webhook、指标收集等） |
+| **配置文件** | 🟡 中 | YAML/JSON 配置支持 |
+| **环境变量** | 🟡 中 | 应用环境设置 |
+| **健康检查** | 🟢 低 | 定期健康探测 |
+| **Web UI** | 🟢 低 | Web 管理界面 |
 
-### 健康检查
-
-```
-GET /health
-```
-
-## 项目结构
-
-```
-dzjjy/
-├── cmd/
-│   ├── server/          # 服务端入口
-│   └── client/          # 客户端入口
-├── internal/
-│   ├── server/
-│   │   ├── handler/     # HTTP 处理器
-│   │   ├── runtime/     # 运行时管理
-│   │   │   ├── runtime.go
-│   │   │   └── logger_test.go
-│   │   └── auth/        # 认证模块
-│   │       └── auth_test.go
-│   └── client/
-│       └── deploy/      # 部署逻辑
-├── pkg/
-│   └── api/             # API 定义
-├── docs/                # 文档
-│   ├── README.md        # 文档导航索引
-│   ├── PROJECT_PROMPT.md # 项目需求
-│   ├── STATE_PERSISTENCE.md # 状态持久化
-│   ├── TESTING.md       # 测试指南（含覆盖率）
-│   ├── PLAN.md          # 未来规划
-│   └── archive/         # 历史文档归档
-│       ├── IMPLEMENTATION_PLAN.md
-│       ├── IMPLEMENTATION_SUMMARY.md
-│       ├── COVERAGE.md
-│       └── TEST_GUIDE.md
-├── test/                # 测试工具
-│   └── helpers.go       # 测试辅助函数
-└── config/              # 配置示例
-```
-
-## 设计原则
-
-### Unix 设计哲学
-
-- **模块化**：清晰的模块划分，通过接口连接
-- **简单性**：专注核心功能，避免过度设计
-- **通用性**：支持多种运行时，易于扩展
-- **可扩展性**：预留扩展空间，便于添加新功能
-
-### Go 语言优势
-
-本项目充分利用了 Go 语言的特性来实现高效的进程守护：
-
-1. **Goroutine 并发**
-   - 每个进程监控运行在独立的 goroutine 中
-   - 轻量级协程，资源占用极小
-   - 可以同时监控多个进程（未来扩展）
-
-2. **Context 控制**
-   - 使用 `context.Context` 优雅地控制进程生命周期
-   - 支持取消信号传播，确保资源正确释放
-   - 避免 goroutine 泄漏
-
-3. **Channel 通信**
-   - 通过 channel 实现进程状态的安全通信
-   - 符合 "不要通过共享内存来通信，而要通过通信来共享内存" 的理念
-
-4. **RWMutex 同步**
-   - 使用读写锁保护共享状态
-   - 允许多个读操作并发执行
-   - 保证数据一致性
-
-5. **编译型语言**
-   - 单一二进制文件，无需依赖
-   - 跨平台编译，部署简单
-   - 性能优异，资源占用低
-
-## 进程守护实现
-
-类似 PM2 的核心功能：
-
-- **自动重启**：进程崩溃后自动重启，保持服务运行
-- **重启限制**：可配置最大重启次数，防止无限重启循环
-- **优雅停止**：通过 context 取消信号优雅停止进程
-- **状态监控**：实时监控进程状态、PID、运行时间、重启次数
-- **延迟重启**：崩溃后等待 1 秒再重启，避免快速失败循环
-
-## 日志管理功能
-
-完善的日志收集和查询系统：
-
-### 日志收集
-
-- **实时捕获**：自动捕获应用的 stdout 和 stderr 输出
-- **系统日志**：记录进程启动、停止、重启等系统事件
-- **双重存储**：
-  - 内存缓存：保留最近 1000 行日志，快速查询
-  - 文件持久化：所有日志写入文件，便于长期分析
-- **日志分类**：
-  - `stdout`: 标准输出
-  - `stderr`: 标准错误
-  - `system`: 系统事件（启动、停止、重启等）
-
-### 日志文件
-
-- **自动命名**：`{type}-{executable}-{timestamp}.log`
-- **时间戳**：每次启动创建新的日志文件
-- **存储位置**：可配置的日志目录（默认 `./logs`）
-
-### 日志查询
-
-- **快速查询**：从内存中快速获取最近的日志
-- **行数控制**：可指定返回的日志行数
-- **时间戳**：每条日志都带有精确的时间戳
-- **类型标识**：清晰标识日志来源（stdout/stderr/system）
-
-### 使用场景
-
-1. **快速定位问题**：查看最近的错误日志
-2. **监控应用输出**：实时了解应用运行状态
-3. **调试部署**：查看启动过程中的输出
-4. **分析崩溃**：查看崩溃前的日志信息
+**设计原则**：
+1. **保持简单**：避免过度设计
+2. **向后兼容**：不破坏现有 API
+3. **充分测试**：功能独立测试
+4. **文档先行**：实现前先设计接口
 
 ## 注意事项
 
-1. 本工具仅用于开发环境，不适合生产环境
-2. Token 认证较为简单，请妥善保管
-3. 服务端会自动停止旧服务，请确保数据已保存
-4. 上传的文件会覆盖工作目录中的同名文件
-5. 启用自动重启时，建议设置合理的 `max_restarts` 值，避免无限重启
-6. 进程崩溃后会等待 1 秒再重启，这是为了避免快速失败循环
-7. 日志文件会持续增长，建议定期清理旧日志
-8. 内存中只保留最近 1000 行日志，更早的日志需要查看日志文件
-
-## 测试
-
-本项目包含全面的单元测试和集成测试，确保代码质量和可靠性。
-
-### 测试覆盖
-
-| 模块 | 测试文件 | 测试用例数 | 覆盖率 |
-|------|---------|-----------|--------|
-| Archive (归档处理) | `internal/server/archive/archive_test.go` | 18 | 81.1% |
-| Auth (认证) | `internal/server/auth/auth_test.go` | 14 | 100% |
-| Runtime Logger (日志管理) | `internal/server/runtime/logger_test.go` | 16 | 100% |
-| Runtime Manager (进程管理) | `internal/runtime/runtime_test.go` | 14 | 全面测试 |
-
-**总测试用例：62+**
-
-### 运行测试
-
-```bash
-# 运行所有测试
-go test ./...
-
-# 运行特定模块测试
-go test ./internal/server/archive/...
-go test ./internal/server/auth/...
-go test ./internal/server/runtime/...
-go test ./internal/runtime/...
-
-# 查看测试覆盖率
-go test -cover ./internal/server/...
-
-# 生成详细覆盖率报告
-go test -coverprofile=coverage.out ./internal/server/...
-go tool cover -html=coverage.out
-```
-
-## 📚 详细文档
-
-所有项目文档已整理至 `docs/` 文件夹：
-
-### 📖 核心文档
-- **[docs/README.md](docs/README.md)** - 文档导航和概览
-- **[docs/PROJECT_PROMPT.md](docs/PROJECT_PROMPT.md)** - 项目需求和已完成功能
-- **[docs/STATE_PERSISTENCE.md](docs/STATE_PERSISTENCE.md)** - 状态持久化模块文档
-- **[docs/TESTING.md](docs/TESTING.md)** - 完整测试指南（含覆盖率）
-- **[docs/PLAN.md](docs/PLAN.md)** - 未来规划和扩展计划
-
-### 📁 历史文档（归档）
-- **[docs/archive/IMPLEMENTATION_PLAN.md](docs/archive/IMPLEMENTATION_PLAN.md)** - 原始实现计划
-- **[docs/archive/IMPLEMENTATION_SUMMARY.md](docs/archive/IMPLEMENTATION_SUMMARY.md)** - 实现工作总结
-- **[docs/archive/COVERAGE.md](docs/archive/COVERAGE.md)** - 详细覆盖率报告
-- **[docs/archive/TEST_GUIDE.md](docs/archive/TEST_GUIDE.md)** - 测试编写指南
-
----
-
-## 🧪 测试特性概览
-
-**Archive 模块测试：**
-- ✅ ZIP/TAR/TAR.GZ/GZ 格式解压
-- ✅ 路径遍历攻击防护
-- ✅ 恶意文件检测
-- ✅ 空压缩包处理
-- ✅ 大文件处理
-
-**Auth 模块测试：**
-- ✅ 认证成功/失败场景
-- ✅ 各种错误的 Authorization 头格式
-- ✅ 时序攻击防护验证
-- ✅ 多请求并发处理
-
-**Logger 模块测试：**
-- ✅ 启动/停止生命周期
-- ✅ 日志写入和读取
-- ✅ 内存限制（1000 行）
-- ✅ 并发写入安全
-- ✅ 文件名清理（防路径遍历）
-
-**Runtime Manager 测试：**
-- ✅ 进程启动/停止
-- ✅ 自动重启（带次数限制）
-- ✅ 并发操作安全
-- ✅ 重启功能
-
-**State Persistence 测试：**
-- ✅ 原子写入和校验和
-- ✅ 自动备份和恢复
-- ✅ 事件驱动同步
-- ✅ 进程状态跟踪
-
-### 测试工具
-
-使用 [testify](https://github.com/stretchr/testify) 提供：
-- `require` - 失败即停止的断言
-- `assert` - 失败继续的断言
-
-详见 [docs/TESTING.md](docs/TESTING.md)
+- ⚠️ 仅用于开发环境，不适合生产
+- 🔐 Token 认证简单，请妥善保管
+- 💾 服务端会自动停止旧服务，请保存数据
+- 📁 上传文件会覆盖工作目录同名文件
+- 🔄 自动重启建议设置合理的 `max_restarts` 值
+- ⏱️ 进程崩溃后等待 1 秒再重启（防快速失败）
+- 🗑️ 日志支持自动轮转，可配置保留策略
+- 💾 内存仅保留最近 1000 行日志
 
 ## 许可证
 

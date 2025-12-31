@@ -6,13 +6,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxLogLines = 1000 // 内存中保留的最大日志行数
+	maxLogLines        = 1000              // 内存中保留的最大日志行数
+	defaultMaxFileSize = 10 * 1024 * 1024  // 默认10MB
+	defaultMaxFiles    = 10                // 默认保留10个文件
+	rotationCheckEvery = 100               // 每100次写入检查一次大小
 )
 
 // sanitizeFilename 清理文件名，移除危险字符
@@ -23,7 +27,7 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\\", "_")
 
 	// 替换其他危险字符
-	dangerous := []string{":", "*", "?", "\"", "<", ">", "|", " ", "&", ";", "(", ")", "$", "`", "{" ,"}", "[" ,"]"}
+	dangerous := []string{":", "*", "?", "\"", "<", ">", "|", " ", "&", ";", "(", ")", "$", "`", "{", "}", "[", "]"}
 	for _, char := range dangerous {
 		name = strings.ReplaceAll(name, char, "_")
 	}
@@ -55,16 +59,28 @@ type LogEntry struct {
 	Message   string    `json:"message"`
 }
 
+// RotationConfig 日志轮转配置
+type RotationConfig struct {
+	MaxSize    int64 // 单个文件最大大小（字节），0表示禁用轮转
+	MaxFiles   int   // 保留的文件数量，0表示不限制
+	Enabled    bool  // 是否启用轮转
+}
+
 // Logger 日志管理器
 type Logger struct {
-	mu         sync.RWMutex
-	logs       []LogEntry
-	logFile    *os.File
-	logPath    string // 存储日志文件路径，即使文件已关闭
-	logDir     string
-	appName    string
-	maxLines   int
-	done       chan struct{} // 用于控制捕获 goroutine 退出
+	mu              sync.RWMutex
+	logs            []LogEntry
+	logFile         *os.File
+	logPath         string // 存储日志文件路径，即使文件已关闭
+	logDir          string
+	appName         string
+	maxLines        int
+	done            chan struct{} // 用于控制捕获 goroutine 退出
+
+	// 轮转相关字段
+	rotationConfig  RotationConfig
+	writeCount      int   // 写入计数器，用于优化性能
+	currentFileSize int64 // 当前文件大小
 }
 
 // NewLogger 创建日志管理器
@@ -75,7 +91,19 @@ func NewLogger(logDir, appName string) *Logger {
 		appName:  appName,
 		maxLines: maxLogLines,
 		done:     make(chan struct{}),
+		rotationConfig: RotationConfig{
+			MaxSize:  defaultMaxFileSize,
+			MaxFiles: defaultMaxFiles,
+			Enabled:  true,
+		},
 	}
+}
+
+// SetRotationConfig 设置轮转配置
+func (l *Logger) SetRotationConfig(config RotationConfig) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rotationConfig = config
 }
 
 // Start 启动日志收集
@@ -103,6 +131,8 @@ func (l *Logger) Start() error {
 	l.logFile = file
 	l.logPath = logPath
 	l.logs = make([]LogEntry, 0, maxLogLines)
+	l.writeCount = 0
+	l.currentFileSize = 0
 
 	return nil
 }
@@ -153,8 +183,128 @@ func (l *Logger) WriteLog(logType, message string) {
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
 			entry.Type,
 			entry.Message)
-		l.logFile.WriteString(line)
+
+		// 检查是否需要轮转（优化：每100次写入检查一次，或文件过大时立即检查）
+		l.writeCount++
+		if l.rotationConfig.Enabled &&
+			(l.writeCount%rotationCheckEvery == 0 || l.currentFileSize > l.rotationConfig.MaxSize) {
+			l.checkAndRotate()
+		}
+
+		// 写入数据
+		n, _ := l.logFile.WriteString(line)
+		l.currentFileSize += int64(n)
 		l.logFile.Sync()
+	}
+}
+
+// checkAndRotate 检查并执行日志轮转
+func (l *Logger) checkAndRotate() {
+	// 获取当前文件大小
+	if l.logFile == nil {
+		return
+	}
+
+	// MaxSize <= 0 表示禁用轮转
+	if l.rotationConfig.MaxSize <= 0 {
+		return
+	}
+
+	// 如果文件大小未超过限制，不需要轮转
+	if l.currentFileSize <= l.rotationConfig.MaxSize {
+		return
+	}
+
+	// 关闭当前文件
+	l.logFile.Close()
+	l.logFile = nil
+
+	// 重命名当前文件为轮转文件
+	currentPath := l.logPath
+	if _, err := os.Stat(currentPath); err == nil {
+		// 生成轮转文件名：app-20251231-150405.rotated.001.log
+		timestamp := time.Now().Format("20060102-150405")
+		rotatedPath := fmt.Sprintf("%s.rotated.%s.log",
+			strings.TrimSuffix(currentPath, ".log"), timestamp)
+
+		// 如果目标已存在，添加序号
+		if _, err := os.Stat(rotatedPath); err == nil {
+			for i := 1; i < 1000; i++ {
+				rotatedPath = fmt.Sprintf("%s.rotated.%s.%03d.log",
+					strings.TrimSuffix(currentPath, ".log"), timestamp, i)
+				if _, err := os.Stat(rotatedPath); err != nil {
+					break
+				}
+			}
+		}
+
+		os.Rename(currentPath, rotatedPath)
+	}
+
+	// 创建新文件
+	safeAppName := sanitizeFilename(l.appName)
+	newTimestamp := time.Now().Format("20060102-150405")
+	newPath := filepath.Join(l.logDir, fmt.Sprintf("%s-%s.log", safeAppName, newTimestamp))
+
+	file, err := os.Create(newPath)
+	if err != nil {
+		// 如果创建失败，尝试创建一个临时文件
+		file, err = os.CreateTemp(l.logDir, fmt.Sprintf("%s-*.log", safeAppName))
+		if err != nil {
+			return
+		}
+	}
+
+	l.logFile = file
+	l.logPath = newPath
+	l.currentFileSize = 0
+
+	// 清理旧文件
+	l.cleanupOldFiles()
+}
+
+// cleanupOldFiles 清理旧的日志文件
+func (l *Logger) cleanupOldFiles() {
+	if l.rotationConfig.MaxFiles <= 0 {
+		return // 不限制文件数量
+	}
+
+	// 获取所有日志文件
+	files, err := os.ReadDir(l.logDir)
+	if err != nil {
+		return
+	}
+
+	// 过滤出当前应用的日志文件
+	safeAppName := sanitizeFilename(l.appName)
+	var logFiles []os.FileInfo
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		name := f.Name()
+		// 匹配应用名前缀
+		if strings.HasPrefix(name, safeAppName+"-") &&
+		   (strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".log.rotated.*.log")) {
+			info, _ := f.Info()
+			logFiles = append(logFiles, info)
+		}
+	}
+
+	// 如果文件数量未超过限制，不需要清理
+	if len(logFiles) <= l.rotationConfig.MaxFiles {
+		return
+	}
+
+	// 按修改时间排序（最旧的在前）
+	sort.Slice(logFiles, func(i, j int) bool {
+		return logFiles[i].ModTime().Before(logFiles[j].ModTime())
+	})
+
+	// 删除旧文件，保留最新的 MaxFiles 个
+	for i := 0; i < len(logFiles)-l.rotationConfig.MaxFiles; i++ {
+		filePath := filepath.Join(l.logDir, logFiles[i].Name())
+		os.Remove(filePath)
 	}
 }
 
