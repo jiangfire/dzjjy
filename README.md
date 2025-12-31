@@ -411,10 +411,16 @@ dzjjy/
 ├── pkg/
 │   └── api/             # API 定义
 ├── docs/                # 文档
-│   ├── README.md        # 文档索引
-│   ├── TESTING.md       # 测试指南
-│   ├── COVERAGE.md      # 覆盖率报告
-│   └── TEST_GUIDE.md    # 测试编写指南
+│   ├── README.md        # 文档导航索引
+│   ├── PROJECT_PROMPT.md # 项目需求
+│   ├── STATE_PERSISTENCE.md # 状态持久化
+│   ├── TESTING.md       # 测试指南（含覆盖率）
+│   ├── PLAN.md          # 未来规划
+│   └── archive/         # 历史文档归档
+│       ├── IMPLEMENTATION_PLAN.md
+│       ├── IMPLEMENTATION_SUMMARY.md
+│       ├── COVERAGE.md
+│       └── TEST_GUIDE.md
 ├── test/                # 测试工具
 │   └── helpers.go       # 测试辅助函数
 └── config/              # 配置示例
@@ -553,18 +559,18 @@ go tool cover -html=coverage.out
 
 所有项目文档已整理至 `docs/` 文件夹：
 
-### 📖 项目文档
-- **[docs/PROJECT_PROMPT.md](docs/PROJECT_PROMPT.md)** - 项目需求文档和功能说明
-- **[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)** - 实现计划和架构设计
-- **[docs/PLAN.md](docs/PLAN.md)** - 复杂系统实现计划（多应用、持久化、插件系统）
-
-### 🧪 测试文档
-- **[docs/TESTING.md](docs/TESTING.md)** - 完整的测试覆盖和运行指南
-- **[docs/COVERAGE.md](docs/COVERAGE.md)** - 详细的覆盖率报告
-- **[docs/TEST_GUIDE.md](docs/TEST_GUIDE.md)** - 如何编写高质量测试
-
-### 📋 文档索引
+### 📖 核心文档
 - **[docs/README.md](docs/README.md)** - 文档导航和概览
+- **[docs/PROJECT_PROMPT.md](docs/PROJECT_PROMPT.md)** - 项目需求和已完成功能
+- **[docs/STATE_PERSISTENCE.md](docs/STATE_PERSISTENCE.md)** - 状态持久化模块文档
+- **[docs/TESTING.md](docs/TESTING.md)** - 完整测试指南（含覆盖率）
+- **[docs/PLAN.md](docs/PLAN.md)** - 未来规划和扩展计划
+
+### 📁 历史文档（归档）
+- **[docs/archive/IMPLEMENTATION_PLAN.md](docs/archive/IMPLEMENTATION_PLAN.md)** - 原始实现计划
+- **[docs/archive/IMPLEMENTATION_SUMMARY.md](docs/archive/IMPLEMENTATION_SUMMARY.md)** - 实现工作总结
+- **[docs/archive/COVERAGE.md](docs/archive/COVERAGE.md)** - 详细覆盖率报告
+- **[docs/archive/TEST_GUIDE.md](docs/archive/TEST_GUIDE.md)** - 测试编写指南
 
 ---
 
@@ -596,13 +602,19 @@ go tool cover -html=coverage.out
 - ✅ 并发操作安全
 - ✅ 重启功能
 
+**State Persistence 测试：**
+- ✅ 原子写入和校验和
+- ✅ 自动备份和恢复
+- ✅ 事件驱动同步
+- ✅ 进程状态跟踪
+
 ### 测试工具
 
 使用 [testify](https://github.com/stretchr/testify) 提供：
 - `require` - 失败即停止的断言
 - `assert` - 失败继续的断言
 
-详见 [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md)
+详见 [docs/TESTING.md](docs/TESTING.md)
 
 ## 许可证
 

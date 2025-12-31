@@ -17,6 +17,7 @@ func main() {
 	uploadDir := flag.String("upload", "./uploads", "upload directory")
 	workDir := flag.String("work", "./workspace", "work directory")
 	logDir := flag.String("log", "./logs", "log directory")
+	stateFile := flag.String("state", "", "state file for persistence (optional)")
 	flag.Parse()
 
 	// 配置 slog
@@ -45,8 +46,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 创建处理器和中间件
-	h := handler.NewHandler(*uploadDir, *workDir, *logDir)
+	// 创建处理器（支持状态持久化）
+	var h *handler.Handler
+	if *stateFile != "" {
+		slog.Info("state persistence enabled", "file", *stateFile)
+		h = handler.NewHandlerWithState(*uploadDir, *workDir, *logDir, *stateFile)
+
+		// 恢复之前的状态
+		if err := h.RestoreState(); err != nil {
+			slog.Warn("failed to restore state", "error", err)
+		}
+	} else {
+		h = handler.NewHandler(*uploadDir, *workDir, *logDir)
+	}
+
 	authMw := auth.NewMiddleware(*token)
 
 	// 注册路由
@@ -69,6 +82,7 @@ func main() {
 		"upload_dir", *uploadDir,
 		"work_dir", *workDir,
 		"log_dir", *logDir,
+		"state_file", *stateFile,
 	)
 
 	// 配置带超时的 HTTP 服务器

@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+// EventNotifier 事件通知接口
+type EventNotifier interface {
+	Notify(eventType string, data map[string]interface{})
+}
+
+// EventAdapter 事件适配器（用于状态持久化）
+type EventAdapter struct {
+	AppName string
+	Notifier EventNotifier
+}
+
+// Notify 发送事件通知
+func (e *EventAdapter) Notify(eventType string, data map[string]interface{}) {
+	if e.Notifier != nil {
+		e.Notifier.Notify(eventType, data)
+	}
+}
+
 const (
 	TypeExec    = "exec"    // 可执行程序
 	TypeRuntime = "runtime" // 需要运行时的程序
@@ -38,12 +56,45 @@ type Manager struct {
 	running      bool
 	logger       *Logger
 	logDir       string
+	eventAdapter *EventAdapter // 事件通知适配器
+	appName      string        // 应用名称（用于事件）
+	monitorDone  chan struct{} // 监控goroutine完成信号
 }
 
 // NewManager 创建管理器
 func NewManager(logDir string) *Manager {
 	return &Manager{
 		logDir: logDir,
+	}
+}
+
+// SetEventAdapter 设置事件通知器
+func (m *Manager) SetEventAdapter(adapter *EventAdapter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventAdapter = adapter
+}
+
+// SetAppName 设置应用名称
+func (m *Manager) SetAppName(appName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appName = appName
+}
+
+// notify 发送事件通知（内部方法）
+func (m *Manager) notify(eventType string, data map[string]interface{}) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.eventAdapter != nil {
+		// 添加通用数据
+		if data == nil {
+			data = make(map[string]interface{})
+		}
+		data["app_name"] = m.appName
+		data["timestamp"] = time.Now().Unix()
+		m.eventAdapter.Notify(eventType, data)
 	}
 }
 
@@ -76,6 +127,7 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.restartCount = 0
 	m.running = true
+	m.monitorDone = make(chan struct{})
 
 	// 创建日志管理器（使用安全的文件名）
 	safeExecutable := sanitizeFilename(executable)
@@ -102,6 +154,16 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 		// 不启用自动重启时，也需要监控进程退出
 		go m.waitProcess()
 	}
+
+	// 发送启动事件（在goroutine中，避免阻塞）
+	go func() {
+		pid := m.GetPID()
+		logPath := m.GetLogFile()
+		m.notify("start", map[string]interface{}{
+			"pid":     pid,
+			"logPath": logPath,
+		})
+	}()
 
 	return nil
 }
@@ -186,6 +248,7 @@ func (m *Manager) startProcess() error {
 
 // monitor 监控进程并自动重启
 func (m *Manager) monitor() {
+	defer close(m.monitorDone) // 通知监控已退出
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -267,6 +330,8 @@ func (m *Manager) monitor() {
 
 // waitProcess 等待进程退出（不重启）
 func (m *Manager) waitProcess() {
+	defer close(m.monitorDone) // 通知监控已退出
+
 	// 在锁外获取命令引用
 	m.mu.RLock()
 	cmd := m.cmd
@@ -288,9 +353,9 @@ func (m *Manager) waitProcess() {
 // Stop 停止应用
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if !m.running {
+		m.mu.Unlock()
 		return fmt.Errorf("no running application")
 	}
 
@@ -303,9 +368,11 @@ func (m *Manager) Stop() error {
 	}
 
 	// 杀死进程
+	var pid int
 	if m.cmd != nil && m.cmd.Process != nil {
-		pid := m.cmd.Process.Pid
+		pid = m.cmd.Process.Pid
 		if err := m.cmd.Process.Kill(); err != nil {
+			m.mu.Unlock()
 			return fmt.Errorf("failed to kill process: %w", err)
 		}
 		slog.Info("process stopped", "pid", pid)
@@ -321,6 +388,18 @@ func (m *Manager) Stop() error {
 	}
 
 	m.cmd = nil
+	m.mu.Unlock()
+
+	// 等待监控goroutine完成（避免死锁）
+	if m.monitorDone != nil {
+		<-m.monitorDone
+	}
+
+	// 发送停止事件
+	m.notify("stop", map[string]interface{}{
+		"pid": pid,
+	})
+
 	return nil
 }
 
@@ -332,7 +411,12 @@ func (m *Manager) Restart() error {
 		return fmt.Errorf("no running application")
 	}
 
+	// 在锁内获取配置和PID
 	config := m.config
+	oldPID := 0
+	if m.cmd != nil && m.cmd.Process != nil {
+		oldPID = m.cmd.Process.Pid
+	}
 	m.mu.Unlock()
 
 	// 停止当前进程
@@ -344,7 +428,7 @@ func (m *Manager) Restart() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// 重新启动
-	return m.Start(
+	err := m.Start(
 		config.Type,
 		config.WorkDir,
 		config.Executable,
@@ -353,6 +437,17 @@ func (m *Manager) Restart() error {
 		config.AutoRestart,
 		config.MaxRestarts,
 	)
+
+	// 发送重启事件
+	if err == nil {
+		newPID := m.GetPID()
+		m.notify("restart", map[string]interface{}{
+			"old_pid": oldPID,
+			"new_pid": newPID,
+		})
+	}
+
+	return err
 }
 
 // IsRunning 检查是否运行中
@@ -383,6 +478,34 @@ func (m *Manager) GetInfo() (appType, executable, entry string, autoRestart bool
 		return m.config.Type, m.config.Executable, m.config.Entry, m.config.AutoRestart, m.restartCount, uptime
 	}
 	return "", "", "", false, 0, 0
+}
+
+// GetConfig 获取配置信息（用于状态持久化）
+func (m *Manager) GetConfig() *ProcessConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.config == nil {
+		return nil
+	}
+
+	// 返回配置的副本
+	return &ProcessConfig{
+		Type:        m.config.Type,
+		WorkDir:     m.config.WorkDir,
+		Executable:  m.config.Executable,
+		Entry:       m.config.Entry,
+		Args:        m.config.Args,
+		AutoRestart: m.config.AutoRestart,
+		MaxRestarts: m.config.MaxRestarts,
+	}
+}
+
+// GetAppName 获取应用名称
+func (m *Manager) GetAppName() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.appName
 }
 
 // GetLogs 获取日志

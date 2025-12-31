@@ -12,24 +12,85 @@ import (
 
 	"github.com/jiangfire/dzjjy/internal/server/archive"
 	"github.com/jiangfire/dzjjy/internal/server/runtime"
+	"github.com/jiangfire/dzjjy/internal/server/state"
 	"github.com/jiangfire/dzjjy/pkg/api"
 )
 
 // Handler HTTP处理器
 type Handler struct {
-	manager   *runtime.Manager
-	uploadDir string
-	workDir   string
-	logDir    string
+	manager     *runtime.Manager
+	uploadDir   string
+	workDir     string
+	logDir      string
+	stateStore  *state.StateStore      // 状态存储
+	syncManager *state.SyncManager     // 状态同步器
+	restoreMgr  *state.RestoreManager  // 恢复管理器
+	appName     string                 // 应用名称（用于状态持久化）
 }
 
-// NewHandler 创建处理器
+// NewHandler 创建处理器（不带状态持久化）
 func NewHandler(uploadDir, workDir, logDir string) *Handler {
 	return &Handler{
 		manager:   runtime.NewManager(logDir),
 		uploadDir: uploadDir,
 		workDir:   workDir,
 		logDir:    logDir,
+	}
+}
+
+// NewHandlerWithState 创建支持状态持久化的处理器
+func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler {
+	h := &Handler{
+		uploadDir: uploadDir,
+		workDir:   workDir,
+		logDir:    logDir,
+	}
+
+	// 初始化状态持久化组件
+	h.stateStore = state.NewStateStore(stateFile)
+	h.syncManager = state.NewSyncManager(h.stateStore)
+	h.restoreMgr = state.NewRestoreManager(h.stateStore, h.syncManager)
+
+	// 创建Manager并设置事件适配器
+	h.manager = runtime.NewManager(logDir)
+
+	// 设置默认应用名称（可以在部署时更新）
+	h.appName = "default"
+
+	// 设置事件适配器
+	adapter := state.NewManagerEventAdapter(h.syncManager, h.appName, nil)
+	h.manager.SetEventAdapter(&runtime.EventAdapter{
+		AppName:  h.appName,
+		Notifier: adapter,
+	})
+
+	return h
+}
+
+// RestoreState 恢复之前的状态
+func (h *Handler) RestoreState() error {
+	if h.restoreMgr == nil {
+		return nil // 无状态持久化，直接返回
+	}
+
+	// 执行恢复流程
+	err := h.restoreMgr.Restore()
+	if err != nil {
+		slog.Error("failed to restore state", "error", err)
+		return err
+	}
+
+	// 清理无效状态
+	h.restoreMgr.Cleanup()
+
+	return nil
+}
+
+// SetAppName 设置应用名称（用于状态持久化）
+func (h *Handler) SetAppName(appName string) {
+	h.appName = appName
+	if h.manager != nil {
+		h.manager.SetAppName(appName)
 	}
 }
 
@@ -180,10 +241,51 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		slog.Info("archive extracted successfully", "file", header.Filename)
 	}
 
+	// 注册应用到状态管理器（如果启用）
+	if h.syncManager != nil {
+		appName := fmt.Sprintf("%s-%s", appType, executable)
+		h.SetAppName(appName)
+
+		// 更新事件适配器
+		adapter := state.NewManagerEventAdapter(h.syncManager, appName, &runtime.ProcessConfig{
+			Type:        appType,
+			WorkDir:     h.workDir,
+			Executable:  executable,
+			Entry:       entry,
+			Args:        args,
+			AutoRestart: autoRestart,
+			MaxRestarts: maxRestarts,
+		})
+		h.manager.SetEventAdapter(&runtime.EventAdapter{
+			AppName:  appName,
+			Notifier: adapter,
+		})
+
+		// 发送注册事件
+		h.syncManager.OnAppEvent(state.AppEvent{
+			Type:    "register",
+			AppName: appName,
+			Config: &state.ProcessConfig{
+				Type:        appType,
+				WorkDir:     h.workDir,
+				Executable:  executable,
+				Entry:       entry,
+				Args:        args,
+				AutoRestart: autoRestart,
+				MaxRestarts: maxRestarts,
+			},
+		})
+	}
+
 	// 启动应用
 	if err := h.manager.Start(appType, h.workDir, executable, entry, args, autoRestart, maxRestarts); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to start app: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// 手动触发持久化（如果启用）
+	if h.syncManager != nil {
+		h.syncManager.ManualPersist()
 	}
 
 	h.sendSuccess(w, "deployment successful", map[string]any{
@@ -211,6 +313,11 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	if err := h.manager.Stop(); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// 手动触发持久化（如果启用）
+	if h.syncManager != nil {
+		h.syncManager.ManualPersist()
 	}
 
 	h.sendSuccess(w, "application stopped", nil)
@@ -269,9 +376,50 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 注册应用到状态管理器（如果启用）
+	if h.syncManager != nil {
+		appName := fmt.Sprintf("%s-%s", req.Type, req.Executable)
+		h.SetAppName(appName)
+
+		// 更新事件适配器
+		adapter := state.NewManagerEventAdapter(h.syncManager, appName, &runtime.ProcessConfig{
+			Type:        req.Type,
+			WorkDir:     h.workDir,
+			Executable:  req.Executable,
+			Entry:       req.Entry,
+			Args:        req.Args,
+			AutoRestart: req.AutoRestart,
+			MaxRestarts: req.MaxRestarts,
+		})
+		h.manager.SetEventAdapter(&runtime.EventAdapter{
+			AppName:  appName,
+			Notifier: adapter,
+		})
+
+		// 发送注册事件
+		h.syncManager.OnAppEvent(state.AppEvent{
+			Type:    "register",
+			AppName: appName,
+			Config: &state.ProcessConfig{
+				Type:        req.Type,
+				WorkDir:     h.workDir,
+				Executable:  req.Executable,
+				Entry:       req.Entry,
+				Args:        req.Args,
+				AutoRestart: req.AutoRestart,
+				MaxRestarts: req.MaxRestarts,
+			},
+		})
+	}
+
 	if err := h.manager.Start(req.Type, h.workDir, req.Executable, req.Entry, req.Args, req.AutoRestart, req.MaxRestarts); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to start: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// 手动触发持久化（如果启用）
+	if h.syncManager != nil {
+		h.syncManager.ManualPersist()
 	}
 
 	h.sendSuccess(w, "application started", map[string]any{
@@ -294,6 +442,11 @@ func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
 	if err := h.manager.Restart(); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to restart: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// 手动触发持久化（如果启用）
+	if h.syncManager != nil {
+		h.syncManager.ManualPersist()
 	}
 
 	h.sendSuccess(w, "application restarted", map[string]any{
