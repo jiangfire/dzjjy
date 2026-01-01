@@ -3,6 +3,7 @@
 > 用于开发环境的快速部署工具，类似 PM2 的进程守护管理器
 
 **核心功能**：
+- ✅ **多应用管理**：同时管理多个应用，独立工作目录和日志
 - ✅ 进程守护（自动重启、崩溃恢复）
 - ✅ 文件部署（支持 ZIP/TAR/GZ 自动解压）
 - ✅ 日志管理（内存缓存 + 文件持久化 + 自动轮转）
@@ -80,36 +81,67 @@ go build -o dzjjy-client ./cmd/client
 
 **工作流程**：上传 → 自动检测格式 → 解压到工作目录 → 删除压缩包 → 启动应用
 
-#### 其他操作
+#### 多应用管理
 
 ```bash
-# 查询状态
-./dzjjy-client status -server http://localhost:8080 -token your-token
+# 部署到指定应用（默认: default）
+./dzjjy-client deploy -server http://localhost:8080 -token your-token \
+  -app myapp -file app.py -type runtime -executable python3 -entry app.py
 
-# 重启应用
-./dzjjy-client restart -server http://localhost:8080 -token your-token
+# 查询指定应用状态
+./dzjjy-client status -server http://localhost:8080 -token your-token -app myapp
 
-# 停止应用
-./dzjjy-client stop -server http://localhost:8080 -token your-token
+# 列出所有应用
+./dzjjy-client list -server http://localhost:8080 -token your-token
 
-# 查看日志（默认100行）
-./dzjjy-client logs -server http://localhost:8080 -token your-token
-# 指定行数
-./dzjjy-client logs -server http://localhost:8080 -token your-token -lines 50
+# 停止指定应用
+./dzjjy-client stop -server http://localhost:8080 -token your-token -app myapp
+
+# 重启指定应用
+./dzjjy-client restart -server http://localhost:8080 -token your-token -app myapp
+
+# 查看指定应用日志
+./dzjjy-client logs -server http://localhost:8080 -token your-token -app myapp -lines 50
+
+# 启动已停止的应用
+./dzjjy-client start -server http://localhost:8080 -token your-token \
+  -app myapp -type runtime -executable python3 -entry app.py
+
+# 删除应用（停止并清理）
+./dzjjy-client remove -server http://localhost:8080 -token your-token -app myapp
 ```
+
+**向后兼容**：不指定 `-app` 参数时，默认操作名为 `default` 的应用。
 
 ## API 接口
 
 所有接口需要 `Authorization: Bearer <token>` 头（除 `/health`）。
 
+### 多应用路由（推荐）
+
 | 方法 | 路径 | 说明 | 请求体 |
 |------|------|------|--------|
-| `POST` | `/api/v1/deploy` | 部署应用 | multipart/form-data |
-| `POST` | `/api/v1/start` | 启动应用 | JSON |
-| `POST` | `/api/v1/stop` | 停止应用 | - |
-| `POST` | `/api/v1/restart` | 重启应用 | - |
-| `GET` | `/api/v1/status` | 查询状态 | - |
-| `GET` | `/api/v1/logs?lines=N` | 查询日志 | - |
+| `GET` | `/api/v1/apps` | 列出所有应用 | - |
+| `POST` | `/api/v1/apps/{name}/deploy` | 部署应用 | multipart/form-data |
+| `POST` | `/api/v1/apps/{name}/start` | 启动应用 | JSON |
+| `POST` | `/api/v1/apps/{name}/stop` | 停止应用 | - |
+| `POST` | `/api/v1/apps/{name}/restart` | 重启应用 | - |
+| `GET` | `/api/v1/apps/{name}/status` | 查询状态 | - |
+| `GET` | `/api/v1/apps/{name}/logs?lines=N` | 查询日志 | - |
+| `DELETE` | `/api/v1/apps/{name}` | 删除应用 | - |
+
+> **TODO**: 服务器端路由配置需要更新以支持 `DELETE /api/v1/apps/{name}`。当前实现使用 `POST /api/v1/apps/{name}/remove`。
+
+### 单应用路由（向后兼容）
+
+| 方法 | 路径 | 说明 | 请求体 |
+|------|------|------|--------|
+| `POST` | `/api/v1/deploy` | 部署到 default 应用 | multipart/form-data |
+| `POST` | `/api/v1/start` | 启动 default 应用 | JSON |
+| `POST` | `/api/v1/stop` | 停止 default 应用 | - |
+| `POST` | `/api/v1/restart` | 重启 default 应用 | - |
+| `GET` | `/api/v1/status` | 查询 default 应用状态 | - |
+| `GET` | `/api/v1/logs?lines=N` | 查询 default 应用日志 | - |
 | `GET` | `/health` | 健康检查 | - |
 
 ### 部署请求示例
@@ -144,6 +176,7 @@ max_restarts: 0（无限）或正整数
   "success": true,
   "message": "ok",
   "data": {
+    "app_name": "myapp",
     "running": true,
     "pid": 12345,
     "type": "runtime",
@@ -156,18 +189,162 @@ max_restarts: 0（无限）或正整数
 }
 ```
 
+### 列出应用示例
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": {
+    "count": 2,
+    "apps": {
+      "web-server": {
+        "app_name": "web-server",
+        "running": true,
+        "pid": 12345,
+        "type": "runtime",
+        "executable": "python3",
+        "entry": "app.py",
+        "uptime": 3600
+      },
+      "api-server": {
+        "app_name": "api-server",
+        "running": false
+      }
+    }
+  }
+}
+```
+
 ## 📚 文档
 
 | 文档 | 说明 |
 |------|------|
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | 架构设计、模块结构、核心概念 |
 | **[docs/TESTING.md](docs/TESTING.md)** | 测试指南、覆盖率、最佳实践 |
+| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | 开发指南、构建命令、设计原则 |
+| **[docs/PLAN.md](docs/PLAN.md)** | 项目计划、功能规划、优先级 |
+
+## 🚀 多应用配置示例
+
+### 场景 1: 同时运行 Web 服务和 API 服务
+
+**服务端启动:**
+```bash
+./dzjjy-server -token my-secret-token -port 8080 -state ./state.json
+```
+
+**部署 Web 服务 (Python Flask):**
+```bash
+# 1. 打包应用
+zip -r web-app.zip app.py requirements.txt static/ templates/
+
+# 2. 部署到 web-server
+./dzjjy-client deploy \
+  -server http://localhost:8080 \
+  -token my-secret-token \
+  -app web-server \
+  -file web-app.zip \
+  -type runtime \
+  -executable python3 \
+  -entry app.py \
+  -args "--host=0.0.0.0 --port=5000" \
+  -auto-restart \
+  -max-restarts 5
+```
+
+**部署 API 服务 (Node.js):**
+```bash
+# 1. 打包应用
+zip -r api-app.zip server.js package.json
+
+# 2. 部署到 api-server
+./dzjjy-client deploy \
+  -server http://localhost:8080 \
+  -token my-secret-token \
+  -app api-server \
+  -file api-app.zip \
+  -type runtime \
+  -executable node \
+  -entry server.js \
+  -args "--port=3000" \
+  -auto-restart \
+  -max-restarts 0  # 无限重启
+```
+
+**管理多个应用:**
+```bash
+# 查看所有应用状态
+./dzjjy-client list -server http://localhost:8080 -token my-secret-token
+
+# 查看特定应用状态
+./dzjjy-client status -server http://localhost:8080 -token my-secret-token -app web-server
+
+# 查看特定应用日志
+./dzjjy-client logs -server http://localhost:8080 -token my-secret-token -app api-server -lines 100
+
+# 重启特定应用
+./dzjjy-client restart -server http://localhost:8080 -token my-secret-token -app web-server
+
+# 停止特定应用
+./dzjjy-client stop -server http://localhost:8080 -token my-secret-token -app api-server
+
+# 删除应用（停止并清理工作目录）
+./dzjjy-client remove -server http://localhost:8080 -token my-secret-token -app web-server
+```
+
+### 场景 2: 多环境管理
+
+**开发环境:**
+```bash
+./dzjjy-client deploy -app myapp-dev -file app.py -type runtime -executable python3 -entry app.py -args "--env=dev"
+```
+
+**测试环境:**
+```bash
+./dzjjy-client deploy -app myapp-test -file app.py -type runtime -executable python3 -entry app.py -args "--env=test"
+```
+
+**生产环境 (模拟):**
+```bash
+./dzjjy-client deploy -app myapp-prod -file app.py -type runtime -executable python3 -entry app.py -args "--env=prod" -auto-restart -max-restarts 10
+```
+
+### 工作目录结构
+
+启用多应用后，工作目录结构如下：
+```
+workspace/
+├── web-server/      # web-server 的工作目录
+│   ├── app.py
+│   └── static/
+├── api-server/      # api-server 的工作目录
+│   ├── server.js
+│   └── package.json
+└── myapp-dev/       # 开发环境的工作目录
+    └── app.py
+
+logs/
+├── web-server/      # web-server 的日志文件
+├── api-server/      # api-server 的日志文件
+└── myapp-dev/       # 开发环境的日志文件
+
+uploads/             # 上传的压缩包临时存放
+```
+
+### 状态持久化
+
+使用 `-state` 参数启动服务器后，应用状态会自动保存：
+```bash
+./dzjjy-server -token my-token -state ./state.json
+```
+
+重启服务器后，会自动恢复之前运行的应用状态（需要应用文件仍在工作目录中）。
 
 ## 🔧 未来规划
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| **多应用管理** | 🔴 高 | 支持同时管理多个应用 |
 | **插件系统** | 🟡 中 | 可扩展的插件机制（Webhook、指标收集等） |
 | **配置文件** | 🟡 中 | YAML/JSON 配置支持 |
 | **环境变量** | 🟡 中 | 应用环境设置 |
@@ -193,4 +370,14 @@ max_restarts: 0（无限）或正整数
 
 ## 许可证
 
-MIT License
+本项目采用 **GNU Affero General Public License v3 (AGPL-3.0)** 协议。
+
+**重要说明**：
+- 如果您修改本项目并在网络服务中使用，必须开源您的修改版本
+- 任何基于本项目的衍生作品也必须使用 AGPL-3.0 协议
+- 详细条款请查看 [LICENSE](LICENSE) 文件
+
+---
+
+**文档更新时间**：2026-01-01
+**最后更新**：文档归档优化、添加 .gitignore 规则、更新文档导航、切换至 AGPL-3.0 协议

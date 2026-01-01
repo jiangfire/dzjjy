@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"syscall"
 
 	"log/slog"
@@ -118,22 +120,22 @@ func (rm *RestoreManager) isProcessRunningWindows(pid int) bool {
 		return false
 	}
 
+	outputStr := string(output)
+
 	// tasklist输出格式:
 	// 如果找到进程: "image.exe 12345 Console ..."
 	// 如果没找到: "INFO: No tasks are running which match the specified criteria."
-	// 或者只有表头: "Image Name PID Session Name"
-	// 检查输出是否包含PID数字（排除表头和INFO行）
-	outputStr := string(output)
-	// 查找 "PID" 后面的数字，如果找到匹配的PID数字，说明进程存在
-	// 简单方法：检查输出行数 > 1（表头至少1行，有进程则至少2行）
-	lines := 0
-	for i := 0; i < len(outputStr); i++ {
-		if outputStr[i] == '\n' {
-			lines++
-		}
+
+	// 使用正则匹配PID数字，更可靠
+	// 匹配模式: 任意字符后跟空格+PID+空格+其他
+	pidPattern := regexp.MustCompile(`\s` + strconv.Itoa(pid) + `\s`)
+
+	// 检查是否包含匹配的PID，且不包含INFO信息
+	if pidPattern.MatchString(outputStr) && !regexp.MustCompile(`INFO: No tasks`).MatchString(outputStr) {
+		return true
 	}
-	// 包含换行符的行数，如果 > 1 表示有实际进程信息
-	return lines > 1
+
+	return false
 }
 
 // isWindows 检查是否为Windows平台

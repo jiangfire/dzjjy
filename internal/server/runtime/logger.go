@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	maxLogLines        = 1000              // 内存中保留的最大日志行数
-	defaultMaxFileSize = 10 * 1024 * 1024  // 默认10MB
-	defaultMaxFiles    = 10                // 默认保留10个文件
-	rotationCheckEvery = 100               // 每100次写入检查一次大小
+	maxLogLines        = 1000             // 内存中保留的最大日志行数
+	defaultMaxFileSize = 10 * 1024 * 1024 // 默认10MB
+	defaultMaxFiles    = 10               // 默认保留10个文件
+	rotationCheckEvery = 100              // 每100次写入检查一次大小
 )
 
 // sanitizeFilename 清理文件名，移除危险字符
@@ -61,21 +61,21 @@ type LogEntry struct {
 
 // RotationConfig 日志轮转配置
 type RotationConfig struct {
-	MaxSize    int64 // 单个文件最大大小（字节），0表示禁用轮转
-	MaxFiles   int   // 保留的文件数量，0表示不限制
-	Enabled    bool  // 是否启用轮转
+	MaxSize  int64 // 单个文件最大大小（字节），0表示禁用轮转
+	MaxFiles int   // 保留的文件数量，0表示不限制
+	Enabled  bool  // 是否启用轮转
 }
 
 // Logger 日志管理器
 type Logger struct {
-	mu              sync.RWMutex
-	logs            []LogEntry
-	logFile         *os.File
-	logPath         string // 存储日志文件路径，即使文件已关闭
-	logDir          string
-	appName         string
-	maxLines        int
-	done            chan struct{} // 用于控制捕获 goroutine 退出
+	mu       sync.RWMutex
+	logs     []LogEntry
+	logFile  *os.File
+	logPath  string // 存储日志文件路径，即使文件已关闭
+	logDir   string
+	appName  string
+	maxLines int
+	done     chan struct{} // 用于控制捕获 goroutine 退出
 
 	// 轮转相关字段
 	rotationConfig  RotationConfig
@@ -285,7 +285,7 @@ func (l *Logger) cleanupOldFiles() {
 		name := f.Name()
 		// 匹配应用名前缀
 		if strings.HasPrefix(name, safeAppName+"-") &&
-		   (strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".log.rotated.*.log")) {
+			(strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".log.rotated.*.log")) {
 			info, _ := f.Info()
 			logFiles = append(logFiles, info)
 		}

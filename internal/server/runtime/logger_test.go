@@ -1220,4 +1220,3 @@ func TestLogger_Rotation_ZeroMaxSize(t *testing.T) {
 
 	assert.Equal(t, 0, rotatedCount, "MaxSize=0 应该禁用轮转")
 }
-

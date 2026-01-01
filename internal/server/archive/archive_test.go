@@ -187,8 +187,8 @@ func TestIsArchive(t *testing.T) {
 // TestExtract_Zip 测试 ZIP 解压
 func TestExtract_Zip(t *testing.T) {
 	zipPath := createTestZip(t, map[string]string{
-		"file1.txt": "content1",
-		"file2.txt": "content2",
+		"file1.txt":        "content1",
+		"file2.txt":        "content2",
 		"subdir/file3.txt": "content3",
 	})
 
@@ -305,8 +305,8 @@ func TestExtract_MaliciousTarGz(t *testing.T) {
 	// 错误信息可能包含路径遍历或 EOF（因为跳过了无效文件）
 	assert.True(t,
 		err.Error() == "extraction completed with 1 invalid paths (path traversal detected): [../etc/passwd]" ||
-		strings.Contains(err.Error(), "path traversal") ||
-		strings.Contains(err.Error(), "EOF"),
+			strings.Contains(err.Error(), "path traversal") ||
+			strings.Contains(err.Error(), "EOF"),
 		"错误应该与路径遍历相关: %s", err.Error())
 
 	// 验证正常文件被解压

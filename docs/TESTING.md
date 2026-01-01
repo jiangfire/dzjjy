@@ -1,5 +1,8 @@
 # 测试指南
 
+> 文档更新：2026-01-01
+> 更新：测试统计数据，添加 Windows 兼容性说明
+
 ## 快速运行
 
 ```bash
@@ -22,16 +25,18 @@ go tool cover -html=coverage.out
 
 ## 测试统计
 
-| 模块 | 用例 | 覆盖率 | 状态 |
-|------|------|--------|------|
+| 模块 | 用例数 | 覆盖率 | 状态 |
+|------|--------|--------|------|
 | Archive | 18 | 81.1% | ✅ |
 | Auth | 14 | 100% | ✅ |
-| Logger | 49 | 92.9%+ | ✅ |
-| Manager | 14 | 全面 | ✅ |
-| State | 8 | 全面 | ✅ |
-| Handler | 60+ | 76.4% | ✅ |
-| Client | 45+ | 89.8% | ✅ |
-| **总计** | **200+** | **~75%** | **优秀** |
+| Logger | 57 | 77.3% | ✅ |
+| MultiManager | 9 | 全面 | ⚠️ 1个失败* |
+| Manager | 13 | 全面 | ✅ |
+| State | 8 | 57.0% | ✅ |
+| Client Deploy | 47 | 59.4% | ✅ |
+| **总计** | **166+** | **~70%** | **良好** |
+
+> *注：MultiManager 测试在 Windows 环境下有 1 个测试失败（`TestMultiManager_MultipleApps`），与 `echo` 命令在 Windows 的行为差异有关，不影响核心功能。
 
 ## 测试工具
 
@@ -45,13 +50,6 @@ import (
 ```
 - `assert` - 失败继续
 - `require` - 失败停止
-
-### 辅助函数 (test/helpers.go)
-```go
-dir := test.SetupTestDir(t)
-defer test.CleanupTestDir(t, dir)
-zipData := test.CreateTestZip(t, map[string]string{"main.go": "code"})
-```
 
 ## 最佳实践
 

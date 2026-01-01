@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jiangfire/dzjjy/internal/server/auth"
@@ -62,13 +64,17 @@ func main() {
 
 	authMw := auth.NewMiddleware(*token)
 
-	// 注册路由
+	// 注册路由（支持多应用）
+	// 旧版单应用路由（向后兼容，默认使用 "default" 应用）
 	http.HandleFunc("/api/v1/deploy", authMw.Authenticate(h.Deploy))
 	http.HandleFunc("/api/v1/stop", authMw.Authenticate(h.Stop))
 	http.HandleFunc("/api/v1/start", authMw.Authenticate(h.Start))
 	http.HandleFunc("/api/v1/restart", authMw.Authenticate(h.Restart))
 	http.HandleFunc("/api/v1/status", authMw.Authenticate(h.Status))
 	http.HandleFunc("/api/v1/logs", authMw.Authenticate(h.Logs))
+
+	// 新版多应用路由
+	http.HandleFunc("/api/v1/apps/", authMw.Authenticate(createMultiAppHandler(h)))
 
 	// 健康检查
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -98,4 +104,70 @@ func main() {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// createMultiAppHandler 创建多应用路由处理器
+func createMultiAppHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 提取路径后缀: /api/v1/apps/{appName}/{action}
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/apps/")
+
+		// 空路径或仅斜杠，列出所有应用
+		if path == "" || path == "/" {
+			h.ListApps(w, r)
+			return
+		}
+
+		// 解析应用名和操作
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) < 1 {
+			sendJSONError(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+
+		appName := parts[0]
+
+		// 如果只有应用名，查询状态
+		if len(parts) == 1 {
+			// 临时修改路径供 handler 使用
+			r.URL.Path = "/api/v1/apps/" + appName + "/status"
+			h.Status(w, r)
+			return
+		}
+
+		// 有应用名和操作
+		action := parts[1]
+
+		// 临时修改路径供 handler 使用
+		r.URL.Path = "/api/v1/apps/" + appName + "/" + action
+
+		switch action {
+		case "deploy":
+			h.Deploy(w, r)
+		case "stop":
+			h.Stop(w, r)
+		case "start":
+			h.Start(w, r)
+		case "restart":
+			h.Restart(w, r)
+		case "status":
+			h.Status(w, r)
+		case "logs":
+			h.Logs(w, r)
+		case "remove":
+			h.RemoveApp(w, r)
+		default:
+			sendJSONError(w, "unknown action: "+action, http.StatusNotFound)
+		}
+	}
+}
+
+// sendJSONError 发送JSON错误响应
+func sendJSONError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": false,
+		"message": message,
+	})
 }

@@ -151,7 +151,7 @@ func CreateTestArchive(t *testing.T, format, dir string) string {
 	case "zip":
 		archivePath = filepath.Join(dir, "test.zip")
 		zipData := CreateTestZip(t, map[string]string{
-			"app.py":   "print('Hello from Python')",
+			"app.py":     "print('Hello from Python')",
 			"config.txt": "config=value",
 		})
 		require.NoError(t, os.WriteFile(archivePath, zipData, 0644))

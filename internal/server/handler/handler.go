@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,25 +17,24 @@ import (
 	"github.com/jiangfire/dzjjy/pkg/api"
 )
 
-// Handler HTTP处理器
+// Handler HTTP处理器（支持多应用）
 type Handler struct {
-	manager     *runtime.Manager
-	uploadDir   string
-	workDir     string
-	logDir      string
-	stateStore  *state.StateStore      // 状态存储
-	syncManager *state.SyncManager     // 状态同步器
-	restoreMgr  *state.RestoreManager  // 恢复管理器
-	appName     string                 // 应用名称（用于状态持久化）
+	multiManager *runtime.MultiManager // 多应用管理器
+	uploadDir    string
+	workDir      string
+	logDir       string
+	stateStore   *state.StateStore     // 状态存储
+	syncManager  *state.SyncManager    // 状态同步器
+	restoreMgr   *state.RestoreManager // 恢复管理器
 }
 
 // NewHandler 创建处理器（不带状态持久化）
 func NewHandler(uploadDir, workDir, logDir string) *Handler {
 	return &Handler{
-		manager:   runtime.NewManager(logDir),
-		uploadDir: uploadDir,
-		workDir:   workDir,
-		logDir:    logDir,
+		multiManager: runtime.NewMultiManager(logDir),
+		uploadDir:    uploadDir,
+		workDir:      workDir,
+		logDir:       logDir,
 	}
 }
 
@@ -51,60 +51,137 @@ func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler 
 	h.syncManager = state.NewSyncManager(h.stateStore)
 	h.restoreMgr = state.NewRestoreManager(h.stateStore, h.syncManager)
 
-	// 创建Manager并设置事件适配器
-	h.manager = runtime.NewManager(logDir)
-
-	// 设置默认应用名称（可以在部署时更新）
-	h.appName = "default"
-
-	// 设置事件适配器
-	adapter := state.NewManagerEventAdapter(h.syncManager, h.appName, nil)
-	h.manager.SetEventAdapter(&runtime.EventAdapter{
-		AppName:  h.appName,
-		Notifier: adapter,
-	})
+	// 创建多应用管理器（带状态通知器）
+	h.multiManager = runtime.NewMultiManagerWithState(logDir, h)
 
 	return h
 }
 
-// RestoreState 恢复之前的状态
+// OnAppEvent 实现 StateNotifier 接口，接收 Manager 的事件并转发给 SyncManager
+func (h *Handler) OnAppEvent(eventType string, appName string, config *runtime.ProcessConfig, pid int) {
+	if h.syncManager == nil {
+		return
+	}
+
+	// 发送事件到状态同步器（类型相同，无需转换）
+	h.syncManager.OnAppEvent(state.AppEvent{
+		Type:    eventType,
+		AppName: appName,
+		Config:  (*state.ProcessConfig)(config), // 类型别名转换
+		PID:     pid,
+	})
+}
+
+// RestoreState 恢复之前的状态并自动重启需要自动重启的应用
 func (h *Handler) RestoreState() error {
 	if h.restoreMgr == nil {
 		return nil // 无状态持久化，直接返回
 	}
 
-	// 执行恢复流程
+	// 1. 加载状态文件并恢复到 syncManager
 	err := h.restoreMgr.Restore()
 	if err != nil {
 		slog.Error("failed to restore state", "error", err)
 		return err
 	}
 
-	// 清理无效状态
-	h.restoreMgr.Cleanup()
+	// 2. 清理无效状态（已停止的进程）
+	if err := h.restoreMgr.Cleanup(); err != nil {
+		slog.Warn("cleanup failed", "error", err)
+	}
+
+	// 3. 获取需要自动重启的应用列表
+	// 从 syncManager 获取状态，找出需要重启的应用
+	stateData := h.syncManager.GetState()
+	ctx := context.Background()
+
+	for appName, appState := range stateData.Apps {
+		// 只处理已停止但需要自动重启的应用
+		if appState.Status == state.StatusStopped &&
+			appState.Config != nil &&
+			appState.Config.AutoRestart {
+
+			slog.Info("auto-restarting app on restore", "app", appName)
+
+			// 类型相同，直接转换（无需手动复制字段）
+			config := (*runtime.ProcessConfig)(appState.Config)
+
+			// 启动应用
+			if err := h.multiManager.StartApp(ctx, appName, config); err != nil {
+				slog.Error("failed to auto-restart app", "app", appName, "error", err)
+				// 继续处理其他应用
+			}
+		}
+	}
+
+	// 4. 手动触发持久化以保存重启后的状态
+	if h.syncManager != nil {
+		h.syncManager.ManualPersist()
+	}
 
 	return nil
 }
 
-// SetAppName 设置应用名称（用于状态持久化）
-func (h *Handler) SetAppName(appName string) {
-	h.appName = appName
-	if h.manager != nil {
-		h.manager.SetAppName(appName)
-	}
-}
-
-// Deploy 处理部署请求
+// Deploy 处理部署请求（支持多应用）
 func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// 1. 提取和验证参数
+	appName, config, err := h.extractDeployParams(r)
+	if err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// 2. 准备工作目录
+	if err := h.prepareWorkDir(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 3. 处理文件上传和解压
+	if err := h.handleFileUpload(r, appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 4. 注册应用到状态管理器
+	h.registerApp(appName, config)
+
+	// 5. 启动应用
+	ctx := r.Context()
+	if err := h.multiManager.StartApp(ctx, appName, config); err != nil {
+		h.sendError(w, fmt.Sprintf("failed to start app: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 6. 持久化状态
+	h.persistState()
+
+	// 7. 返回成功响应
+	manager, _ := h.multiManager.GetApp(appName)
+	h.sendSuccess(w, "deployment successful", map[string]any{
+		"app_name":     appName,
+		"pid":          manager.GetPID(),
+		"type":         config.Type,
+		"executable":   config.Executable,
+		"entry":        config.Entry,
+		"auto_restart": config.AutoRestart,
+		"max_restarts": config.MaxRestarts,
+	})
+}
+
+// extractDeployParams 提取和验证部署参数
+func (h *Handler) extractDeployParams(r *http.Request) (string, *runtime.ProcessConfig, error) {
+	// 从 URL 路径获取应用名称
+	appName := h.getAppNameWithDefault(r)
+
 	// 解析multipart表单
 	if err := r.ParseMultipartForm(100 << 20); err != nil { // 100MB
-		h.sendError(w, fmt.Sprintf("failed to parse form: %v", err), http.StatusBadRequest)
-		return
+		return "", nil, fmt.Errorf("failed to parse form: %v", err)
 	}
 
 	// 获取部署配置
@@ -118,217 +195,192 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(mr, "%d", &maxRestarts)
 	}
 
-	// 输入验证
-	if appType == "" || executable == "" {
-		h.sendError(w, "type and executable are required", http.StatusBadRequest)
-		return
+	// 验证配置
+	if err := h.validateAppConfig(appType, executable, entry, maxRestarts); err != nil {
+		return "", nil, err
 	}
 
-	// 验证应用类型
-	if appType != runtime.TypeExec && appType != runtime.TypeRuntime {
-		h.sendError(w, fmt.Sprintf("invalid type: %s (must be 'exec' or 'runtime')", appType), http.StatusBadRequest)
-		return
-	}
-
-	// 验证可执行文件（非空且不含危险字符）
-	executable = strings.TrimSpace(executable)
-	if executable == "" {
-		h.sendError(w, "executable cannot be empty", http.StatusBadRequest)
-		return
-	}
-	if strings.ContainsAny(executable, "|;&`$()<>[]{}") {
-		h.sendError(w, "executable contains invalid characters", http.StatusBadRequest)
-		return
-	}
-
-	// 验证重启次数
-	if maxRestarts < 0 {
-		h.sendError(w, "max_restarts cannot be negative", http.StatusBadRequest)
-		return
-	}
-
-	// runtime 类型必须有 entry
-	if appType == runtime.TypeRuntime && entry == "" {
-		h.sendError(w, "entry is required for runtime type", http.StatusBadRequest)
-		return
-	}
-
-	// 停止当前运行的应用
-	if h.manager.IsRunning() {
-		if err := h.manager.Stop(); err != nil {
-			h.sendError(w, fmt.Sprintf("failed to stop current app: %v", err), http.StatusInternalServerError)
-			return
+	// 检查应用是否已存在，如果存在且正在运行则停止
+	if manager, exists := h.multiManager.GetApp(appName); exists && manager.IsRunning() {
+		// 使用MultiManager的StopApp方法，而不是直接调用manager.Stop()
+		if err := h.multiManager.StopApp(appName); err != nil {
+			return "", nil, fmt.Errorf("failed to stop current app: %v", err)
 		}
 	}
 
-	// 清理工作目录
-	if err := os.RemoveAll(h.workDir); err != nil {
-		h.sendError(w, fmt.Sprintf("failed to clean work dir: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if err := os.MkdirAll(h.workDir, 0755); err != nil {
-		h.sendError(w, fmt.Sprintf("failed to create work dir: %v", err), http.StatusInternalServerError)
-		return
+	// 构建配置
+	config := &runtime.ProcessConfig{
+		Type:        appType,
+		WorkDir:     filepath.Join(h.workDir, appName),
+		Executable:  executable,
+		Entry:       entry,
+		Args:        args,
+		AutoRestart: autoRestart,
+		MaxRestarts: maxRestarts,
 	}
 
-	// 保存上传的文件
+	return appName, config, nil
+}
+
+// validateAppConfig 验证应用配置
+func (h *Handler) validateAppConfig(appType, executable, entry string, maxRestarts int) error {
+	if appType == "" || executable == "" {
+		return fmt.Errorf("type and executable are required")
+	}
+
+	if appType != runtime.TypeExec && appType != runtime.TypeRuntime {
+		return fmt.Errorf("invalid type: %s (must be 'exec' or 'runtime')", appType)
+	}
+
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		return fmt.Errorf("executable cannot be empty")
+	}
+
+	if strings.ContainsAny(executable, "|;&`$()<>[]{}") {
+		return fmt.Errorf("executable contains invalid characters")
+	}
+
+	if maxRestarts < 0 {
+		return fmt.Errorf("max_restarts cannot be negative")
+	}
+
+	if appType == runtime.TypeRuntime && entry == "" {
+		return fmt.Errorf("entry is required for runtime type")
+	}
+
+	return nil
+}
+
+// prepareWorkDir 准备应用工作目录
+func (h *Handler) prepareWorkDir(appName string) error {
+	appWorkDir := filepath.Join(h.workDir, appName)
+	if err := os.RemoveAll(appWorkDir); err != nil {
+		return fmt.Errorf("failed to clean work dir: %v", err)
+	}
+	if err := os.MkdirAll(appWorkDir, 0755); err != nil {
+		return fmt.Errorf("failed to create work dir: %v", err)
+	}
+	return nil
+}
+
+// handleFileUpload 处理文件上传和解压
+func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		h.sendError(w, fmt.Sprintf("failed to get file: %v", err), http.StatusBadRequest)
-		return
+		return fmt.Errorf("failed to get file: %v", err)
 	}
 	defer file.Close()
 
 	// 验证文件名
-	if header.Filename == "" {
-		h.sendError(w, "filename cannot be empty", http.StatusBadRequest)
-		return
-	}
-	if len(header.Filename) > 255 {
-		h.sendError(w, "filename too long", http.StatusBadRequest)
-		return
-	}
-	// 检查文件名中的危险字符
-	if strings.ContainsAny(header.Filename, ":\\<>|\"*?") {
-		h.sendError(w, "invalid filename", http.StatusBadRequest)
-		return
+	if err := h.validateFilename(header.Filename); err != nil {
+		return err
 	}
 
-	// 保存到工作目录
-	destPath := filepath.Join(h.workDir, header.Filename)
+	appWorkDir := filepath.Join(h.workDir, appName)
+	destPath := filepath.Join(appWorkDir, header.Filename)
+
+	// 保存文件
 	dest, err := os.Create(destPath)
 	if err != nil {
-		h.sendError(w, fmt.Sprintf("failed to create file: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to create file: %v", err)
 	}
 	defer dest.Close()
 
 	if _, err := io.Copy(dest, file); err != nil {
-		h.sendError(w, fmt.Sprintf("failed to save file: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to save file: %v", err)
 	}
-	dest.Close() // 关闭文件以便解压
+	dest.Close()
 
-	// 检查是否是压缩文件，如果是则解压
+	// 处理压缩文件
 	if archive.IsArchive(header.Filename) {
 		slog.Info("detected archive file, extracting",
+			"app", appName,
 			"filename", header.Filename,
-			"dest", h.workDir,
+			"dest", appWorkDir,
 		)
 
-		if err := archive.Extract(destPath, h.workDir); err != nil {
-			slog.Error("failed to extract archive",
-				"error", err,
-				"file", header.Filename,
-			)
-			// 解压失败，清理已解压的文件
-			os.RemoveAll(h.workDir)
-			os.MkdirAll(h.workDir, 0755)
-			h.sendError(w, fmt.Sprintf("failed to extract archive: %v", err), http.StatusInternalServerError)
-			return
+		if err := archive.Extract(destPath, appWorkDir); err != nil {
+			slog.Error("failed to extract archive", "error", err, "file", header.Filename)
+			os.RemoveAll(appWorkDir)
+			os.MkdirAll(appWorkDir, 0755)
+			return fmt.Errorf("failed to extract archive: %v", err)
 		}
 
-		// 删除压缩文件（失败则返回错误）
 		if err := os.Remove(destPath); err != nil {
-			slog.Error("failed to remove archive file",
-				"error", err,
-				"file", destPath,
-			)
-			h.sendError(w, fmt.Sprintf("failed to remove archive file: %v", err), http.StatusInternalServerError)
-			return
+			slog.Error("failed to remove archive file", "error", err, "file", destPath)
+			return fmt.Errorf("failed to remove archive file: %v", err)
 		}
 
-		slog.Info("archive extracted successfully", "file", header.Filename)
+		slog.Info("archive extracted successfully", "app", appName, "file", header.Filename)
 	}
 
-	// 注册应用到状态管理器（如果启用）
-	if h.syncManager != nil {
-		appName := fmt.Sprintf("%s-%s", appType, executable)
-		h.SetAppName(appName)
+	return nil
+}
 
-		// 更新事件适配器
-		adapter := state.NewManagerEventAdapter(h.syncManager, appName, &runtime.ProcessConfig{
-			Type:        appType,
-			WorkDir:     h.workDir,
-			Executable:  executable,
-			Entry:       entry,
-			Args:        args,
-			AutoRestart: autoRestart,
-			MaxRestarts: maxRestarts,
-		})
-		h.manager.SetEventAdapter(&runtime.EventAdapter{
-			AppName:  appName,
-			Notifier: adapter,
-		})
-
-		// 发送注册事件
-		h.syncManager.OnAppEvent(state.AppEvent{
-			Type:    "register",
-			AppName: appName,
-			Config: &state.ProcessConfig{
-				Type:        appType,
-				WorkDir:     h.workDir,
-				Executable:  executable,
-				Entry:       entry,
-				Args:        args,
-				AutoRestart: autoRestart,
-				MaxRestarts: maxRestarts,
-			},
-		})
+// validateFilename 验证文件名
+func (h *Handler) validateFilename(filename string) error {
+	if filename == "" {
+		return fmt.Errorf("filename cannot be empty")
 	}
+	if len(filename) > 255 {
+		return fmt.Errorf("filename too long")
+	}
+	if strings.ContainsAny(filename, ":\\<>|\"*?") {
+		return fmt.Errorf("invalid filename")
+	}
+	return nil
+}
 
-	// 启动应用
-	if err := h.manager.Start(appType, h.workDir, executable, entry, args, autoRestart, maxRestarts); err != nil {
-		h.sendError(w, fmt.Sprintf("failed to start app: %v", err), http.StatusInternalServerError)
+// registerApp 注册应用到状态管理器
+func (h *Handler) registerApp(appName string, config *runtime.ProcessConfig) {
+	if h.syncManager == nil {
 		return
 	}
 
-	// 手动触发持久化（如果启用）
-	if h.syncManager != nil {
-		h.syncManager.ManualPersist()
-	}
-
-	h.sendSuccess(w, "deployment successful", map[string]any{
-		"pid":          h.manager.GetPID(),
-		"type":         appType,
-		"executable":   executable,
-		"entry":        entry,
-		"auto_restart": autoRestart,
-		"max_restarts": maxRestarts,
+	// 类型相同，直接转换（无需手动复制字段）
+	h.syncManager.OnAppEvent(state.AppEvent{
+		Type:    "register",
+		AppName: appName,
+		Config:  (*state.ProcessConfig)(config),
 	})
 }
 
-// Stop 停止应用
+// persistState 触发状态持久化
+func (h *Handler) persistState() {
+	if h.syncManager != nil {
+		if err := h.syncManager.ManualPersist(); err != nil {
+			slog.Warn("failed to persist state", "error", err)
+		}
+	}
+}
+
+// Stop 停止应用（支持多应用）
 func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if !h.manager.IsRunning() {
-		h.sendError(w, "no running application", http.StatusBadRequest)
-		return
-	}
+	appName := h.getAppNameWithDefault(r)
 
-	if err := h.manager.Stop(); err != nil {
+	if err := h.multiManager.StopApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 手动触发持久化（如果启用）
-	if h.syncManager != nil {
-		h.syncManager.ManualPersist()
-	}
-
-	h.sendSuccess(w, "application stopped", nil)
+	h.persistState()
+	h.sendSuccess(w, "application stopped", map[string]any{"app_name": appName})
 }
 
-// Start 启动应用
+// Start 启动应用（支持多应用）
 func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	appName := h.getAppNameWithDefault(r)
 
 	var req api.DeployRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -336,152 +388,119 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 输入验证
-	if req.Type == "" || req.Executable == "" {
-		h.sendError(w, "type and executable are required", http.StatusBadRequest)
+	// 验证配置
+	if err := h.validateAppConfig(req.Type, req.Executable, req.Entry, req.MaxRestarts); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// 验证应用类型
-	if req.Type != runtime.TypeExec && req.Type != runtime.TypeRuntime {
-		h.sendError(w, fmt.Sprintf("invalid type: %s (must be 'exec' or 'runtime')", req.Type), http.StatusBadRequest)
-		return
-	}
-
-	// 验证可执行文件
-	req.Executable = strings.TrimSpace(req.Executable)
-	if req.Executable == "" {
-		h.sendError(w, "executable cannot be empty", http.StatusBadRequest)
-		return
-	}
-	if strings.ContainsAny(req.Executable, "|;&`$()<>[]{}") {
-		h.sendError(w, "executable contains invalid characters", http.StatusBadRequest)
-		return
-	}
-
-	// 验证重启次数
-	if req.MaxRestarts < 0 {
-		h.sendError(w, "max_restarts cannot be negative", http.StatusBadRequest)
-		return
-	}
-
-	// runtime 类型必须有 entry
-	if req.Type == runtime.TypeRuntime && req.Entry == "" {
-		h.sendError(w, "entry is required for runtime type", http.StatusBadRequest)
-		return
-	}
-
-	if h.manager.IsRunning() {
+	// 检查应用是否已存在且正在运行
+	if manager, exists := h.multiManager.GetApp(appName); exists && manager.IsRunning() {
 		h.sendError(w, "application is already running", http.StatusBadRequest)
 		return
 	}
 
-	// 注册应用到状态管理器（如果启用）
-	if h.syncManager != nil {
-		appName := fmt.Sprintf("%s-%s", req.Type, req.Executable)
-		h.SetAppName(appName)
-
-		// 更新事件适配器
-		adapter := state.NewManagerEventAdapter(h.syncManager, appName, &runtime.ProcessConfig{
-			Type:        req.Type,
-			WorkDir:     h.workDir,
-			Executable:  req.Executable,
-			Entry:       req.Entry,
-			Args:        req.Args,
-			AutoRestart: req.AutoRestart,
-			MaxRestarts: req.MaxRestarts,
-		})
-		h.manager.SetEventAdapter(&runtime.EventAdapter{
-			AppName:  appName,
-			Notifier: adapter,
-		})
-
-		// 发送注册事件
-		h.syncManager.OnAppEvent(state.AppEvent{
-			Type:    "register",
-			AppName: appName,
-			Config: &state.ProcessConfig{
-				Type:        req.Type,
-				WorkDir:     h.workDir,
-				Executable:  req.Executable,
-				Entry:       req.Entry,
-				Args:        req.Args,
-				AutoRestart: req.AutoRestart,
-				MaxRestarts: req.MaxRestarts,
-			},
-		})
+	// 准备应用工作目录
+	appWorkDir := filepath.Join(h.workDir, appName)
+	if err := os.MkdirAll(appWorkDir, 0755); err != nil {
+		h.sendError(w, fmt.Sprintf("failed to create work dir: %v", err), http.StatusInternalServerError)
+		return
 	}
 
-	if err := h.manager.Start(req.Type, h.workDir, req.Executable, req.Entry, req.Args, req.AutoRestart, req.MaxRestarts); err != nil {
+	// 创建进程配置
+	config := &runtime.ProcessConfig{
+		Type:        req.Type,
+		WorkDir:     appWorkDir,
+		Executable:  req.Executable,
+		Entry:       req.Entry,
+		Args:        req.Args,
+		AutoRestart: req.AutoRestart,
+		MaxRestarts: req.MaxRestarts,
+	}
+
+	// 注册应用到状态管理器
+	h.registerApp(appName, config)
+
+	// 启动应用
+	ctx := r.Context()
+	if err := h.multiManager.StartApp(ctx, appName, config); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to start: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 手动触发持久化（如果启用）
-	if h.syncManager != nil {
-		h.syncManager.ManualPersist()
-	}
+	// 持久化状态
+	h.persistState()
 
+	// 获取启动后的信息
+	manager, _ := h.multiManager.GetApp(appName)
 	h.sendSuccess(w, "application started", map[string]any{
-		"pid": h.manager.GetPID(),
+		"app_name": appName,
+		"pid":      manager.GetPID(),
 	})
 }
 
-// Restart 重启应用
+// Restart 重启应用（支持多应用）
 func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if !h.manager.IsRunning() {
-		h.sendError(w, "no running application", http.StatusBadRequest)
-		return
-	}
+	appName := h.getAppNameWithDefault(r)
 
-	if err := h.manager.Restart(); err != nil {
+	if err := h.multiManager.RestartApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to restart: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 手动触发持久化（如果启用）
-	if h.syncManager != nil {
-		h.syncManager.ManualPersist()
-	}
+	h.persistState()
 
+	// 获取重启后的信息
+	manager, _ := h.multiManager.GetApp(appName)
 	h.sendSuccess(w, "application restarted", map[string]any{
-		"pid": h.manager.GetPID(),
+		"app_name": appName,
+		"pid":      manager.GetPID(),
 	})
 }
 
-// Status 查询状态
+// Status 查询状态（支持多应用）
 func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	appType, executable, entry, autoRestart, restartCount, uptime := h.manager.GetInfo()
+	appName := h.getAppNameWithDefault(r)
+
+	info, exists := h.multiManager.GetAppInfo(appName)
+	if !exists {
+		h.sendError(w, "app not found", http.StatusNotFound)
+		return
+	}
+
 	status := api.StatusResponse{
-		Running:      h.manager.IsRunning(),
-		PID:          h.manager.GetPID(),
-		Type:         appType,
-		Executable:   executable,
-		Entry:        entry,
-		AutoRestart:  autoRestart,
-		RestartCount: restartCount,
-		Uptime:       uptime,
+		Running:      info.Running,
+		PID:          info.PID,
+		Type:         info.Type,
+		Executable:   info.Executable,
+		Entry:        info.Entry,
+		AutoRestart:  info.AutoRestart,
+		RestartCount: info.RestartCount,
+		Uptime:       info.Uptime,
+		AppName:      appName,
 	}
 
 	h.sendSuccess(w, "ok", status)
 }
 
-// Logs 查询日志
+// Logs 查询日志（支持多应用）
 func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	appName := h.getAppNameWithDefault(r)
 
 	// 获取查询参数
 	linesStr := r.URL.Query().Get("lines")
@@ -492,14 +511,109 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 获取日志
-	logs := h.manager.GetLogs(lines)
-	logFile := h.manager.GetLogFile()
+	manager, exists := h.multiManager.GetApp(appName)
+	if !exists {
+		h.sendError(w, "app not found", http.StatusNotFound)
+		return
+	}
+
+	logs := manager.GetLogs(lines)
+	logFile := manager.GetLogFile()
 
 	h.sendSuccess(w, "ok", map[string]any{
+		"app_name": appName,
 		"logs":     logs,
 		"log_file": logFile,
 		"count":    len(logs),
 	})
+}
+
+// ListApps 列出所有应用
+func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	apps := h.multiManager.ListApps()
+	infos := make(map[string]api.StatusResponse)
+
+	for _, appName := range apps {
+		if info, exists := h.multiManager.GetAppInfo(appName); exists {
+			infos[appName] = api.StatusResponse{
+				Running:      info.Running,
+				PID:          info.PID,
+				Type:         info.Type,
+				Executable:   info.Executable,
+				Entry:        info.Entry,
+				AutoRestart:  info.AutoRestart,
+				RestartCount: info.RestartCount,
+				Uptime:       info.Uptime,
+				AppName:      appName,
+			}
+		}
+	}
+
+	h.sendSuccess(w, "ok", map[string]any{
+		"count": len(apps),
+		"apps":  infos,
+	})
+}
+
+// RemoveApp 删除应用（停止并清理）
+func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	appName := h.getAppNameWithDefault(r)
+
+	// 停止应用
+	if err := h.multiManager.StopApp(appName); err != nil {
+		// 如果应用不存在，也返回成功（幂等性）
+		if !strings.Contains(err.Error(), "not found") {
+			h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// 清理工作目录
+	appWorkDir := filepath.Join(h.workDir, appName)
+	os.RemoveAll(appWorkDir)
+
+	// 从状态管理器移除
+	if h.syncManager != nil {
+		h.syncManager.OnAppEvent(state.AppEvent{
+			Type:    "deregister",
+			AppName: appName,
+		})
+		h.persistState()
+	}
+
+	h.sendSuccess(w, "application removed", map[string]any{"app_name": appName})
+}
+
+// extractAppName 从 URL 路径提取应用名称
+// 路径格式: /api/v1/apps/{name}/deploy 或 /api/v1/deploy (返回空，使用默认)
+func (h *Handler) extractAppName(path string) string {
+	parts := strings.Split(path, "/")
+	// 查找 "apps" 关键字
+	for i, part := range parts {
+		if part == "apps" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// getAppNameWithDefault 从请求中提取应用名称，提供默认值
+func (h *Handler) getAppNameWithDefault(r *http.Request) string {
+	appName := h.extractAppName(r.URL.Path)
+	if appName == "" {
+		return "default"
+	}
+	return appName
 }
 
 // sendSuccess 发送成功响应
@@ -520,4 +634,13 @@ func (h *Handler) sendError(w http.ResponseWriter, message string, code int) {
 		Success: false,
 		Message: message,
 	})
+}
+
+// GetStateSnapshot 获取所有应用的状态快照（用于持久化）
+func (h *Handler) GetStateSnapshot() map[string]*state.AppState {
+	if h.syncManager == nil {
+		return nil
+	}
+	stateData := h.syncManager.GetState()
+	return stateData.Apps
 }

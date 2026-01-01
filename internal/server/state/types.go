@@ -1,11 +1,13 @@
 package state
 
+import "github.com/jiangfire/dzjjy/pkg/api"
+
 // StateFile 持久化状态文件结构
 type StateFile struct {
-	Version   string    `json:"version"`    // 版本号
-	Timestamp int64     `json:"timestamp"`  // 时间戳
-	Checksum  string    `json:"checksum"`   // SHA256校验和
-	Data      StateData `json:"data"`       // 实际数据
+	Version   string    `json:"version"`   // 版本号
+	Timestamp int64     `json:"timestamp"` // 时间戳
+	Checksum  string    `json:"checksum"`  // SHA256校验和
+	Data      StateData `json:"data"`      // 实际数据
 }
 
 // StateData 状态数据
@@ -24,16 +26,8 @@ type AppState struct {
 	LogPath      string         `json:"log_path"`      // 日志文件路径
 }
 
-// ProcessConfig 进程配置（与runtime包保持一致）
-type ProcessConfig struct {
-	Type        string `json:"type"`        // exec 或 runtime
-	WorkDir     string `json:"work_dir"`    // 工作目录
-	Executable  string `json:"executable"`  // 可执行程序
-	Entry       string `json:"entry"`       // 入口文件
-	Args        string `json:"args"`        // 启动参数
-	AutoRestart bool   `json:"auto_restart"` // 自动重启
-	MaxRestarts int    `json:"max_restarts"` // 最大重启次数
-}
+// ProcessConfig 进程配置（使用pkg/api中的公共类型）
+type ProcessConfig = api.ProcessConfig
 
 const (
 	// StateFileVersion 当前状态文件版本

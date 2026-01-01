@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jiangfire/dzjjy/pkg/api"
 )
 
 // EventNotifier 事件通知接口
@@ -17,7 +20,7 @@ type EventNotifier interface {
 
 // EventAdapter 事件适配器（用于状态持久化）
 type EventAdapter struct {
-	AppName string
+	AppName  string
 	Notifier EventNotifier
 }
 
@@ -33,15 +36,20 @@ const (
 	TypeRuntime = "runtime" // 需要运行时的程序
 )
 
-// ProcessConfig 进程配置
-type ProcessConfig struct {
-	Type        string
-	WorkDir     string
-	Executable  string
-	Entry       string
-	Args        string
-	AutoRestart bool
-	MaxRestarts int
+// ProcessConfig 进程配置（使用pkg/api中的公共类型）
+type ProcessConfig = api.ProcessConfig
+
+// AppInfo 应用信息（用于多应用管理）
+type AppInfo struct {
+	AppName      string
+	Running      bool
+	PID          int
+	Type         string
+	Executable   string
+	Entry        string
+	AutoRestart  bool
+	RestartCount int
+	Uptime       int64
 }
 
 // Manager 运行时管理器
@@ -62,9 +70,11 @@ type Manager struct {
 }
 
 // NewManager 创建管理器
-func NewManager(logDir string) *Manager {
+func NewManager(config *ProcessConfig, logDir, appName string) *Manager {
 	return &Manager{
-		logDir: logDir,
+		config:  config,
+		logDir:  logDir,
+		appName: appName,
 	}
 }
 
@@ -178,11 +188,19 @@ func (m *Manager) startProcess() error {
 		if m.config.Executable == "" {
 			return fmt.Errorf("executable is required for exec type")
 		}
+
+		// 解析可执行文件路径
+		// TypeExec 的可执行文件应该在工作目录中
+		executablePath := m.config.Executable
+		if !filepath.IsAbs(executablePath) {
+			executablePath = filepath.Join(m.config.WorkDir, executablePath)
+		}
+
 		if m.config.Args != "" {
 			argList := strings.Fields(m.config.Args)
-			cmd = exec.CommandContext(m.ctx, m.config.Executable, argList...)
+			cmd = exec.CommandContext(m.ctx, executablePath, argList...)
 		} else {
-			cmd = exec.CommandContext(m.ctx, m.config.Executable)
+			cmd = exec.CommandContext(m.ctx, executablePath)
 		}
 
 	case TypeRuntime:
@@ -191,6 +209,10 @@ func (m *Manager) startProcess() error {
 		if m.config.Executable == "" || m.config.Entry == "" {
 			return fmt.Errorf("executable and entry are required for runtime type")
 		}
+
+		// TypeRuntime 的可执行文件（如 go, python）通常在 PATH 中
+		// 直接使用原始可执行文件名，让系统 PATH 解析
+		executablePath := m.config.Executable
 
 		// 解析 entry（可能包含多个参数）
 		entryArgs := strings.Fields(m.config.Entry)
@@ -204,7 +226,7 @@ func (m *Manager) startProcess() error {
 			cmdArgs = append(cmdArgs, argList...)
 		}
 
-		cmd = exec.CommandContext(m.ctx, m.config.Executable, cmdArgs...)
+		cmd = exec.CommandContext(m.ctx, executablePath, cmdArgs...)
 	}
 
 	cmd.Dir = m.config.WorkDir
@@ -474,7 +496,10 @@ func (m *Manager) GetInfo() (appType, executable, entry string, autoRestart bool
 	defer m.mu.RUnlock()
 
 	if m.config != nil {
-		uptime = int64(time.Since(m.startTime).Seconds())
+		// 只有在 startTime 被设置后才计算 uptime
+		if !m.startTime.IsZero() {
+			uptime = int64(time.Since(m.startTime).Seconds())
+		}
 		return m.config.Type, m.config.Executable, m.config.Entry, m.config.AutoRestart, m.restartCount, uptime
 	}
 	return "", "", "", false, 0, 0
@@ -508,6 +533,38 @@ func (m *Manager) GetAppName() string {
 	return m.appName
 }
 
+// GetAppInfo 获取应用信息（结构化返回）
+func (m *Manager) GetAppInfo() AppInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	info := AppInfo{
+		AppName:      m.appName,
+		Running:      m.running,
+		PID:          0,
+		AutoRestart:  false,
+		RestartCount: m.restartCount,
+		Uptime:       0,
+	}
+
+	if m.cmd != nil && m.cmd.Process != nil {
+		info.PID = m.cmd.Process.Pid
+	}
+
+	if m.config != nil {
+		info.Type = m.config.Type
+		info.Executable = m.config.Executable
+		info.Entry = m.config.Entry
+		info.AutoRestart = m.config.AutoRestart
+	}
+
+	if m.running && !m.startTime.IsZero() {
+		info.Uptime = int64(time.Since(m.startTime).Seconds())
+	}
+
+	return info
+}
+
 // GetLogs 获取日志
 func (m *Manager) GetLogs(lines int) []LogEntry {
 	m.mu.RLock()
@@ -529,3 +586,6 @@ func (m *Manager) GetLogFile() string {
 	}
 	return ""
 }
+
+// 确保 Manager 实现了 AppInfoReader 接口
+var _ AppInfoReader = (*Manager)(nil)

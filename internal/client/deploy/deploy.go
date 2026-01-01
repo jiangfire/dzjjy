@@ -56,8 +56,8 @@ func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, e
 	return &result, nil
 }
 
-// Deploy 部署应用
-func (c *Client) Deploy(filePath, appType, executable, entry, args string, autoRestart bool, maxRestarts int) error {
+// Deploy 部署应用（支持多应用）
+func (c *Client) Deploy(appName, filePath, appType, executable, entry, args string, autoRestart bool, maxRestarts int) error {
 	// 打开文件
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -96,8 +96,8 @@ func (c *Client) Deploy(filePath, appType, executable, entry, args string, autoR
 		return fmt.Errorf("failed to close writer: %w", err)
 	}
 
-	// 发送请求
-	url := c.serverURL + "/api/v1/deploy"
+	// 发送请求（使用多应用路由）
+	url := c.serverURL + "/api/v1/apps/" + appName + "/deploy"
 	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -125,23 +125,23 @@ func (c *Client) Deploy(filePath, appType, executable, entry, args string, autoR
 	return nil
 }
 
-// Stop 停止应用
-func (c *Client) Stop() error {
-	url := c.serverURL + "/api/v1/stop"
+// Stop 停止应用（支持多应用）
+func (c *Client) Stop(appName string) error {
+	url := c.serverURL + "/api/v1/apps/" + appName + "/stop"
 	_, err := c.doRequest("POST", url, nil)
 	return err
 }
 
-// Restart 重启应用
-func (c *Client) Restart() error {
-	url := c.serverURL + "/api/v1/restart"
+// Restart 重启应用（支持多应用）
+func (c *Client) Restart(appName string) error {
+	url := c.serverURL + "/api/v1/apps/" + appName + "/restart"
 	_, err := c.doRequest("POST", url, nil)
 	return err
 }
 
-// Logs 查询日志
-func (c *Client) Logs(lines int) ([]map[string]any, error) {
-	url := fmt.Sprintf("%s/api/v1/logs?lines=%d", c.serverURL, lines)
+// Logs 查询日志（支持多应用）
+func (c *Client) Logs(appName string, lines int) ([]map[string]any, error) {
+	url := fmt.Sprintf("%s/api/v1/apps/%s/logs?lines=%d", c.serverURL, appName, lines)
 	result, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -174,9 +174,9 @@ func (c *Client) Logs(lines int) ([]map[string]any, error) {
 	return result_logs, nil
 }
 
-// Status 查询状态
-func (c *Client) Status() (*api.StatusResponse, error) {
-	url := c.serverURL + "/api/v1/status"
+// Status 查询状态（支持多应用）
+func (c *Client) Status(appName string) (*api.StatusResponse, error) {
+	url := c.serverURL + "/api/v1/apps/" + appName + "/status"
 	result, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -194,4 +194,97 @@ func (c *Client) Status() (*api.StatusResponse, error) {
 	}
 
 	return &status, nil
+}
+
+// ListApps 列出所有应用
+func (c *Client) ListApps() (map[string]api.StatusResponse, error) {
+	url := c.serverURL + "/api/v1/apps"
+	result, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析应用列表
+	dataBytes, err := json.Marshal(result.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
+	}
+
+	var listData map[string]any
+	if err := json.Unmarshal(dataBytes, &listData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal list data: %w", err)
+	}
+
+	// 提取apps
+	appsRaw, ok := listData["apps"].(map[string]any)
+	if !ok {
+		return map[string]api.StatusResponse{}, nil
+	}
+
+	apps := make(map[string]api.StatusResponse)
+	for name, infoRaw := range appsRaw {
+		infoBytes, err := json.Marshal(infoRaw)
+		if err != nil {
+			continue
+		}
+
+		var info api.StatusResponse
+		if err := json.Unmarshal(infoBytes, &info); err != nil {
+			continue
+		}
+
+		apps[name] = info
+	}
+
+	return apps, nil
+}
+
+// Start 启动应用（支持多应用）
+func (c *Client) Start(appName, appType, executable, entry, args string, autoRestart bool, maxRestarts int) error {
+	url := c.serverURL + "/api/v1/apps/" + appName + "/start"
+
+	reqBody := api.DeployRequest{
+		Type:        appType,
+		Executable:  executable,
+		Entry:       entry,
+		Args:        args,
+		AutoRestart: autoRestart,
+		MaxRestarts: maxRestarts,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	_, err = c.doRequest("POST", url, bytes.NewReader(bodyBytes))
+	return err
+}
+
+// Remove 删除应用（支持多应用）
+func (c *Client) Remove(appName string) error {
+	url := c.serverURL + "/api/v1/apps/" + appName
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result api.Response
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !result.Success {
+		return fmt.Errorf("remove failed: %s", result.Message)
+	}
+
+	return nil
 }
