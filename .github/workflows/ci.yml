@@ -1,0 +1,147 @@
+# CI Workflow - 自动测试和构建
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+        cache: true
+
+    - name: Verify Go version
+      run: go version
+
+    - name: Download dependencies
+      run: make deps
+
+    - name: Run linter
+      run: make lint
+      continue-on-error: true  # 不阻塞 CI，但建议修复警告
+
+    - name: Run tests
+      run: make test
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+      continue-on-error: true
+
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    needs: test
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: dzjjy-server-linux-amd64
+            client_artifact: dzjjy-client-linux-amd64
+          - os: windows-latest
+            artifact_name: dzjjy-server-windows-amd64.exe
+            client_artifact: dzjjy-client-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: dzjjy-server-darwin-amd64
+            client_artifact: dzjjy-client-darwin-amd64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+        cache: true
+
+    - name: Build binaries
+      run: make build
+
+    - name: Verify binaries exist
+      run: |
+        ls -la build/
+        ./build/dzjjy-server --help || true
+        ./build/dzjjy-client --help || true
+
+    - name: Upload server artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: build/dzjjy-server
+        retention-days: 7
+
+    - name: Upload client artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.client_artifact }}
+        path: build/dzjjy-client
+        retention-days: 7
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Run govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+    - name: Run gosec
+      run: |
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        gosec ./...
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [test, build, security]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Display build info
+      run: |
+        echo "## CI Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ All tests passed" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Build successful" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Security scan completed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Server and client binaries built" >> $GITHUB_STEP_SUMMARY
+        echo "- Available for download from previous steps" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Create a release tag to trigger release workflow" >> $GITHUB_STEP_SUMMARY
+        echo "- Use \`make ci-release\` for full release build" >> $GITHUB_STEP_SUMMARY

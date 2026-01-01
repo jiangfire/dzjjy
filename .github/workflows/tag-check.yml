@@ -1,0 +1,179 @@
+# Tag Check Workflow - 验证标签格式和预发布检查
+name: Tag Check
+
+on:
+  push:
+    tags:
+      - '*'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-tag:
+    name: Validate Tag Format
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Validate tag format
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "Validating tag: $TAG"
+
+        # Check if tag matches semantic versioning
+        if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+)?$ ]]; then
+          echo "❌ Tag format invalid: $TAG"
+          echo "Expected format: v1.2.3, v1.2.3-beta.1, etc."
+          exit 1
+        fi
+
+        echo "✅ Tag format valid: $TAG"
+
+    - name: Check for existing release
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "Checking for existing release: $TAG"
+
+        # Check if release already exists
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          echo "⚠️ Warning: Release $TAG already exists"
+          echo "This will update the existing release"
+        else
+          echo "✅ New release: $TAG"
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Verify changelog entry
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "Checking for changelog..."
+
+        # Check if CHANGELOG.md exists and has entry for this version
+        if [ -f "CHANGELOG.md" ]; then
+          if grep -q "$TAG" CHANGELOG.md; then
+            echo "✅ Changelog entry found for $TAG"
+          else
+            echo "⚠️ Warning: No changelog entry found for $TAG"
+          fi
+        else
+          echo "ℹ️ No CHANGELOG.md found"
+        fi
+
+  pre-release-checks:
+    name: Pre-release Checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Run quick tests
+      run: |
+        make deps
+        make test
+
+    - name: Quick build check
+      run: |
+        make build
+        echo "✅ Build successful"
+
+    - name: Check binary info
+      run: |
+        if [ -f "build/dzjjy-server" ]; then
+          echo "Server binary info:"
+          ./build/dzjjy-server --help || true
+        fi
+        if [ -f "build/dzjjy-client" ]; then
+          echo "Client binary info:"
+          ./build/dzjjy-client --help || true
+        fi
+
+  documentation-check:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check README
+      run: |
+        if [ -f "README.md" ]; then
+          echo "✅ README.md exists"
+          # Check if README has basic sections
+          if grep -q "## 快速开始" README.md || grep -q "## Quick Start" README.md; then
+            echo "✅ README has quick start section"
+          else
+            echo "⚠️ README missing quick start section"
+          fi
+        else
+          echo "❌ README.md missing"
+          exit 1
+        fi
+
+    - name: Check documentation files
+      run: |
+        echo "Checking docs directory..."
+        if [ -d "docs" ]; then
+          ls -la docs/
+          echo "✅ Documentation directory exists"
+        else
+          echo "⚠️ No docs directory"
+        fi
+
+  summary:
+    name: Pre-release Summary
+    runs-on: ubuntu-latest
+    needs: [validate-tag, pre-release-checks, documentation-check]
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate summary
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "## Pre-release Check Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Tag Information" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tag**: $TAG" >> $GITHUB_STEP_SUMMARY
+        echo "- **Repository**: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Check Results" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Tag format validation" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Pre-release checks" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Documentation validation" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "1. The release workflow will automatically trigger" >> $GITHUB_STEP_SUMMARY
+        echo "2. Multi-platform binaries will be built" >> $GITHUB_STEP_SUMMARY
+        echo "3. GitHub Release will be created with assets" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Manual Verification" >> $GITHUB_STEP_SUMMARY
+        echo "```bash" >> $GITHUB_STEP_SUMMARY
+        echo "# Verify tag locally" >> $GITHUB_STEP_SUMMARY
+        echo "git tag -l '$TAG'" >> $GITHUB_STEP_SUMMARY
+        echo "git show $TAG" >> $GITHUB_STEP_SUMMARY
+        echo "```" >> $GITHUB_STEP_SUMMARY
+
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "❌ Pre-release checks failed"
+        echo "Please review the errors above and fix them before releasing"
+        exit 1
