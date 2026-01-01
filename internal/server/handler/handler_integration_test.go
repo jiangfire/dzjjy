@@ -266,6 +266,11 @@ func createTestApp(t *testing.T, tmpDir, name, mainCode string) string {
 		t.Fatalf("Failed to compile test app: %v\nOutput: %s", err, output)
 	}
 
+	// Ensure binary has executable permissions (important for Linux/CI environments)
+	if err := os.Chmod(binaryPath, 0755); err != nil {
+		t.Fatalf("Failed to set executable permissions: %v", err)
+	}
+
 	return binaryPath
 }
 

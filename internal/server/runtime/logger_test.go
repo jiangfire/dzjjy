@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -383,12 +384,18 @@ func TestLogger_NewLogger(t *testing.T) {
 
 // TestLogger_Start_DirCreationFailure 测试目录创建失败
 func TestLogger_Start_DirCreationFailure(t *testing.T) {
-	// 在Windows上，尝试创建到根目录或受保护目录会失败
-	// 使用一个不存在的父目录路径
-	invalidDir := "Z:\\nonexistent\\protected\\path\\that\\cannot\\be\\created"
-	logger := runtime.NewLogger(invalidDir, "test-fail")
+	var invalidDir string
+	if goruntime.GOOS == "windows" {
+		// Windows: 使用不存在的驱动器路径
+		invalidDir = "Z:\\nonexistent\\protected\\path\\that\\cannot\\be\\created"
+	} else {
+		// Linux/Unix: 使用无法创建的路径（/proc/1/root 在容器中通常不可写）
+		invalidDir = "/proc/1/root/nonexistent/path/that/cannot/be/created"
+	}
 
+	logger := runtime.NewLogger(invalidDir, "test-fail")
 	err := logger.Start()
+
 	// 应该返回错误
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create log dir")
