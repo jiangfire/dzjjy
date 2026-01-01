@@ -305,6 +305,19 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 		return fmt.Errorf("failed to close file: %v", err)
 	}
 
+	// 设置文件权限（二进制文件需要执行权限）
+	// 简单策略：如果文件没有扩展名，或者扩展名为 .exe/.bin，设置可执行权限
+	// 这样可以覆盖测试场景（app1, app2）和 Windows 场景（app1.exe）
+	execExt := filepath.Ext(header.Filename)
+	noExt := execExt == ""
+	isExecExt := execExt == ".exe" || execExt == ".bin"
+	if noExt || isExecExt {
+		// #nosec G302 - executable files need 0755 permissions
+		if err := os.Chmod(destPath, 0755); err != nil {
+			slog.Warn("failed to set executable permissions", "file", destPath, "error", err)
+		}
+	}
+
 	// 处理压缩文件
 	if archive.IsArchive(header.Filename) {
 		slog.Info("detected archive file, extracting",

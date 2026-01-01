@@ -56,7 +56,18 @@ func main() {
 	}
 
 	cmd := exec.Command("go", "build", "-o", path, mainFile)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// 设置执行权限（Linux/Unix 需要）
+	if os.PathSeparator != '\\' {
+		if err := os.Chmod(path, 0755); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func TestMultiManager_StartApp(t *testing.T) {

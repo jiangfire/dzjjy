@@ -41,11 +41,32 @@ type ProcessConfig = api.ProcessConfig
 
 // isValidExecutable 验证可执行文件路径是否安全
 func isValidExecutable(path string) bool {
-	// 禁止包含路径遍历字符
-	if strings.Contains(path, "..") || strings.Contains(path, ":") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+	// 禁止路径遍历
+	if strings.Contains(path, "..") {
 		return false
 	}
-	// 只允许相对路径或纯文件名
+
+	// 相对路径安全（将在 startProcess 中转换为绝对路径）
+	if !filepath.IsAbs(path) {
+		return true
+	}
+
+	// 绝对路径：阻止系统敏感目录
+	dangerousPrefixes := []string{
+		"/etc/", "/usr/", "/bin/", "/sbin/", "/sys/", "/proc/",
+		"C:\\Windows\\", "C:\\System32\\", "C:\\Program Files\\",
+	}
+	for _, prefix := range dangerousPrefixes {
+		if strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix)) {
+			return false
+		}
+	}
+
+	// 阻止路径遍历变种
+	if strings.Contains(path, "/../") || strings.Contains(path, "\\..\\") {
+		return false
+	}
+
 	return true
 }
 
@@ -208,9 +229,14 @@ func (m *Manager) startProcess() error {
 			executablePath = filepath.Join(m.config.WorkDir, executablePath)
 		}
 
-		// 验证可执行文件路径安全
+		// 验证原始路径（防止注入）
 		if !isValidExecutable(m.config.Executable) {
 			return fmt.Errorf("invalid executable path: %s", m.config.Executable)
+		}
+
+		// 验证最终路径（防止遍历）
+		if !isValidExecutable(executablePath) {
+			return fmt.Errorf("invalid executable path after resolution: %s", executablePath)
 		}
 
 		if m.config.Args != "" {
