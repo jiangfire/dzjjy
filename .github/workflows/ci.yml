@@ -75,27 +75,41 @@ jobs:
         cache: true
 
     - name: Build binaries
-      run: make build
+      run: |
+        mkdir -p build
+        go build -ldflags "-s -w" -o build/dzjjy-server ./cmd/server
+        go build -ldflags "-s -w" -o build/dzjjy-client ./cmd/client
 
     - name: Verify binaries exist
       shell: bash
       run: |
         ls -la build/
-        ./build/dzjjy-server --help || true
-        ./build/dzjjy-client --help || true
+        # 自动检测并执行二进制文件（处理 .exe 后缀）
+        if [ -f "build/dzjjy-server.exe" ]; then
+          ./build/dzjjy-server.exe --help || true
+        elif [ -f "build/dzjjy-server" ]; then
+          chmod +x build/dzjjy-server
+          ./build/dzjjy-server --help || true
+        fi
+        if [ -f "build/dzjjy-client.exe" ]; then
+          ./build/dzjjy-client.exe --help || true
+        elif [ -f "build/dzjjy-client" ]; then
+          chmod +x build/dzjjy-client
+          ./build/dzjjy-client --help || true
+        fi
 
     - name: Upload server artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: build/dzjjy-server
+        path: build/dzjjy-server*
         retention-days: 7
 
     - name: Upload client artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.client_artifact }}
-        path: build/dzjjy-client
+        path: build/dzjjy-client*
         retention-days: 7
 
   security:

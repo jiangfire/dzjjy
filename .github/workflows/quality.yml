@@ -166,28 +166,38 @@ jobs:
         cache: true
 
     - name: Build binaries
-      run: make build
+      run: |
+        mkdir -p build
+        go build -ldflags "-s -w" -o build/dzjjy-server ./cmd/server
+        go build -ldflags "-s -w" -o build/dzjjy-client ./cmd/client
 
     - name: Verify binaries
       shell: bash
       run: |
-        if [ "${{ matrix.os }}" == "windows-latest" ]; then
-          if [ -f "build/dzjjy-server.exe" ] && [ -f "build/dzjjy-client.exe" ]; then
-            echo "✅ Windows binaries built successfully"
-          else
-            echo "❌ Windows binaries missing"
-            exit 1
-          fi
+        ls -la build/
+        # 自动检测并执行二进制文件
+        if [ -f "build/dzjjy-server.exe" ]; then
+          echo "✅ Windows server binary built: dzjjy-server.exe"
+          ./build/dzjjy-server.exe --help || true
+        elif [ -f "build/dzjjy-server" ]; then
+          echo "✅ Unix server binary built: dzjjy-server"
+          chmod +x build/dzjjy-server
+          ./build/dzjjy-server --help || true
         else
-          if [ -f "build/dzjjy-server" ] && [ -f "build/dzjjy-client" ]; then
-            echo "✅ Binaries built successfully"
-            chmod +x build/dzjjy-server build/dzjjy-client
-            ./build/dzjjy-server --help || true
-            ./build/dzjjy-client --help || true
-          else
-            echo "❌ Binaries missing"
-            exit 1
-          fi
+          echo "❌ Server binary missing"
+          exit 1
+        fi
+
+        if [ -f "build/dzjjy-client.exe" ]; then
+          echo "✅ Windows client binary built: dzjjy-client.exe"
+          ./build/dzjjy-client.exe --help || true
+        elif [ -f "build/dzjjy-client" ]; then
+          echo "✅ Unix client binary built: dzjjy-client"
+          chmod +x build/dzjjy-client
+          ./build/dzjjy-client --help || true
+        else
+          echo "❌ Client binary missing"
+          exit 1
         fi
 
   documentation-check:
