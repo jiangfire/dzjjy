@@ -183,35 +183,6 @@ jobs:
           - Server binaries: dzjjy-server-{platform}-{arch}(.tar.gz)
           - Client binaries: dzjjy-client-{platform}-{arch}(.tar.gz)
 
-  docker:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: release
-    if: false  # 设置为 true 如果需要 Docker 支持
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-
-    - name: Build and push
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: |
-          ${{ github.repository }}:latest
-          ${{ github.repository }}:${{ github.ref_name }}
-        platforms: linux/amd64,linux/arm64
-
   notify:
     name: Notify
     runs-on: ubuntu-latest

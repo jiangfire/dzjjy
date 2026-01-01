@@ -169,6 +169,7 @@ jobs:
       run: make build
 
     - name: Verify binaries
+      shell: bash
       run: |
         if [ "${{ matrix.os }}" == "windows-latest" ]; then
           if [ -f "build/dzjjy-server.exe" ] && [ -f "build/dzjjy-client.exe" ]; then

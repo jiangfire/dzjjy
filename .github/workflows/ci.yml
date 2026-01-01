@@ -78,6 +78,7 @@ jobs:
       run: make build
 
     - name: Verify binaries exist
+      shell: bash
       run: |
         ls -la build/
         ./build/dzjjy-server --help || true
