@@ -59,7 +59,7 @@ func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, e
 // Deploy 部署应用（支持多应用）
 func (c *Client) Deploy(appName, filePath, appType, executable, entry, args string, autoRestart bool, maxRestarts int) error {
 	// 打开文件
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304 - filePath provided by user for deployment
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
@@ -79,17 +79,29 @@ func (c *Client) Deploy(appName, filePath, appType, executable, entry, args stri
 	}
 
 	// 添加其他字段
-	writer.WriteField("type", appType)
-	writer.WriteField("executable", executable)
+	if err := writer.WriteField("type", appType); err != nil {
+		return fmt.Errorf("failed to write type field: %w", err)
+	}
+	if err := writer.WriteField("executable", executable); err != nil {
+		return fmt.Errorf("failed to write executable field: %w", err)
+	}
 	if entry != "" {
-		writer.WriteField("entry", entry)
+		if err := writer.WriteField("entry", entry); err != nil {
+			return fmt.Errorf("failed to write entry field: %w", err)
+		}
 	}
 	if args != "" {
-		writer.WriteField("args", args)
+		if err := writer.WriteField("args", args); err != nil {
+			return fmt.Errorf("failed to write args field: %w", err)
+		}
 	}
 	if autoRestart {
-		writer.WriteField("auto_restart", "true")
-		writer.WriteField("max_restarts", fmt.Sprintf("%d", maxRestarts))
+		if err := writer.WriteField("auto_restart", "true"); err != nil {
+			return fmt.Errorf("failed to write auto_restart field: %w", err)
+		}
+		if err := writer.WriteField("max_restarts", fmt.Sprintf("%d", maxRestarts)); err != nil {
+			return fmt.Errorf("failed to write max_restarts field: %w", err)
+		}
 	}
 
 	if err := writer.Close(); err != nil {

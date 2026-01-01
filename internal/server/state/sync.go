@@ -158,7 +158,9 @@ func (sm *SyncManager) syncLoop() {
 				sm.mu.RLock()
 				stateCopy := sm.copyState()
 				sm.mu.RUnlock()
-				sm.store.Persist(stateCopy)
+				if err := sm.store.Persist(stateCopy); err != nil {
+					slog.Warn("failed to persist state on close", "error", err)
+				}
 			}
 			return
 		}

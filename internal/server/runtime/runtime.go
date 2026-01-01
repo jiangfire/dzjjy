@@ -39,6 +39,16 @@ const (
 // ProcessConfig 进程配置（使用pkg/api中的公共类型）
 type ProcessConfig = api.ProcessConfig
 
+// isValidExecutable 验证可执行文件路径是否安全
+func isValidExecutable(path string) bool {
+	// 禁止包含路径遍历字符
+	if strings.Contains(path, "..") || strings.Contains(path, ":") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+	// 只允许相对路径或纯文件名
+	return true
+}
+
 // AppInfo 应用信息（用于多应用管理）
 type AppInfo struct {
 	AppName      string
@@ -153,7 +163,9 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 	// 启动进程
 	if err := m.startProcess(); err != nil {
 		m.running = false
-		m.logger.Stop()
+		if stopErr := m.logger.Stop(); stopErr != nil {
+			slog.Warn("failed to stop logger", "error", stopErr)
+		}
 		return err
 	}
 
@@ -196,11 +208,16 @@ func (m *Manager) startProcess() error {
 			executablePath = filepath.Join(m.config.WorkDir, executablePath)
 		}
 
+		// 验证可执行文件路径安全
+		if !isValidExecutable(m.config.Executable) {
+			return fmt.Errorf("invalid executable path: %s", m.config.Executable)
+		}
+
 		if m.config.Args != "" {
 			argList := strings.Fields(m.config.Args)
-			cmd = exec.CommandContext(m.ctx, executablePath, argList...)
+			cmd = exec.CommandContext(m.ctx, executablePath, argList...) // #nosec G204 - validated above
 		} else {
-			cmd = exec.CommandContext(m.ctx, executablePath)
+			cmd = exec.CommandContext(m.ctx, executablePath) // #nosec G204 - validated above
 		}
 
 	case TypeRuntime:
@@ -226,7 +243,12 @@ func (m *Manager) startProcess() error {
 			cmdArgs = append(cmdArgs, argList...)
 		}
 
-		cmd = exec.CommandContext(m.ctx, executablePath, cmdArgs...)
+		// 验证可执行文件路径安全
+		if !isValidExecutable(m.config.Executable) {
+			return fmt.Errorf("invalid executable path: %s", m.config.Executable)
+		}
+
+		cmd = exec.CommandContext(m.ctx, executablePath, cmdArgs...) // #nosec G204 - validated above
 	}
 
 	cmd.Dir = m.config.WorkDir
@@ -362,7 +384,9 @@ func (m *Manager) waitProcess() {
 	if cmd != nil && cmd.Process != nil {
 		pid := cmd.Process.Pid
 		// 等待进程退出（阻塞操作，不持有锁）
-		cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			slog.Warn("process wait error", "pid", pid, "error", err)
+		}
 
 		// 进程已退出，更新状态
 		m.mu.Lock()
@@ -406,7 +430,9 @@ func (m *Manager) Stop() error {
 
 	// 停止日志收集
 	if m.logger != nil {
-		m.logger.Stop()
+		if err := m.logger.Stop(); err != nil {
+			slog.Warn("failed to stop logger", "error", err)
+		}
 	}
 
 	m.cmd = nil

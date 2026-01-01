@@ -61,7 +61,10 @@ func deployCmd() {
 	autoRestart := fs.Bool("auto-restart", false, "enable auto restart on crash")
 	maxRestarts := fs.Int("max-restarts", 0, "max restart attempts (0 = unlimited)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" || *file == "" || *appType == "" || *executable == "" {
 		slog.Error("missing required parameters",
@@ -96,7 +99,10 @@ func stopCmd() {
 	token := fs.String("token", "", "auth token (required)")
 	app := fs.String("app", "default", "application name (for multi-app mode)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")
@@ -119,7 +125,10 @@ func restartCmd() {
 	token := fs.String("token", "", "auth token (required)")
 	app := fs.String("app", "default", "application name (for multi-app mode)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")
@@ -144,7 +153,10 @@ func logsCmd() {
 	lines := fs.Int("lines", 100, "number of log lines to retrieve")
 	follow := fs.Bool("follow", false, "follow log output (not implemented yet)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")
@@ -185,7 +197,10 @@ func statusCmd() {
 	token := fs.String("token", "", "auth token (required)")
 	app := fs.String("app", "default", "application name (for multi-app mode)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")
@@ -226,7 +241,10 @@ func listCmd() {
 	server := fs.String("server", "http://localhost:8080", "server URL")
 	token := fs.String("token", "", "auth token (required)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")
@@ -278,7 +296,10 @@ func startCmd() {
 	autoRestart := fs.Bool("auto-restart", false, "enable auto restart on crash")
 	maxRestarts := fs.Int("max-restarts", 0, "max restart attempts (0 = unlimited)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" || *appType == "" || *executable == "" {
 		slog.Error("missing required parameters")
@@ -302,7 +323,10 @@ func removeCmd() {
 	token := fs.String("token", "", "auth token (required)")
 	app := fs.String("app", "default", "application name (for multi-app mode)")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
 
 	if *token == "" {
 		slog.Error("token is required")

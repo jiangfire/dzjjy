@@ -37,7 +37,7 @@ func (s *StateStore) acquireLock() error {
 	lockPath := s.stateFile + ".lock"
 
 	// 使用 O_EXCL 创建，如果已存在则失败（原子操作）
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL, 0644)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL, 0600) // #nosec G304 - lockPath derived from controlled stateFile
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock, another process may be persisting: %w", err)
 	}
@@ -50,8 +50,12 @@ func (s *StateStore) acquireLock() error {
 func (s *StateStore) releaseLock() {
 	if s.lockFile != nil {
 		lockPath := s.lockFile.Name()
-		s.lockFile.Close()
-		os.Remove(lockPath)
+		if err := s.lockFile.Close(); err != nil {
+			s.log.Warn("failed to close lock file", "error", err)
+		}
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			s.log.Warn("failed to remove lock file", "error", err)
+		}
 		s.lockFile = nil
 	}
 }
@@ -76,20 +80,26 @@ func (s *StateStore) AtomicWriteFile(path string, data []byte) error {
 	tmpPath := filepath.Join(dir, ".tmp."+filepath.Base(path))
 
 	// 1. 写入临时文件
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
 	// 2. 确保临时文件已刷盘
-	tmpFile, err := os.OpenFile(tmpPath, os.O_SYNC, 0644)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_SYNC, 0600) // #nosec G304 - tmpPath derived from controlled path
 	if err == nil {
-		tmpFile.Sync()
-		tmpFile.Close()
+		if syncErr := tmpFile.Sync(); syncErr != nil {
+			slog.Warn("failed to sync temp file", "error", syncErr)
+		}
+		if closeErr := tmpFile.Close(); closeErr != nil {
+			slog.Warn("failed to close temp file", "error", closeErr)
+		}
 	}
 
 	// 3. 原子重命名（Unix系统保证原子性）
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // 清理临时文件
+		if removeErr := os.Remove(tmpPath); removeErr != nil { // 清理临时文件
+			slog.Warn("failed to remove temp file", "error", removeErr)
+		}
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
@@ -196,7 +206,7 @@ func (s *StateStore) Backup() error {
 		return err
 	}
 
-	return os.WriteFile(backupFile, data, 0644)
+	return os.WriteFile(backupFile, data, 0600)
 }
 
 // restoreFromBackup 从备份恢复
@@ -209,7 +219,7 @@ func (s *StateStore) restoreFromBackup() (*StateFile, error) {
 
 	// 读取最新备份
 	latestBackup := matches[len(matches)-1]
-	data, err := os.ReadFile(latestBackup)
+	data, err := os.ReadFile(latestBackup) // #nosec G304 - path from filepath.Glob of controlled stateFile
 	if err != nil {
 		return nil, fmt.Errorf("failed to read backup: %w", err)
 	}
@@ -234,7 +244,9 @@ func (s *StateStore) restoreFromBackup() (*StateFile, error) {
 	s.log.Info("restored from backup", "file", latestBackup)
 
 	// 用备份替换损坏的主文件
-	os.WriteFile(s.stateFile, data, 0644)
+	if err := os.WriteFile(s.stateFile, data, 0600); err != nil {
+		return nil, fmt.Errorf("failed to write state file: %w", err)
+	}
 
 	return &stateFile, nil
 }
@@ -252,7 +264,9 @@ func (s *StateStore) Clear() error {
 	// 删除备份文件
 	matches, _ := filepath.Glob(s.stateFile + ".backup.*")
 	for _, match := range matches {
-		os.Remove(match)
+		if err := os.Remove(match); err != nil && !os.IsNotExist(err) {
+			s.log.Warn("failed to remove backup file", "file", match, "error", err)
+		}
 	}
 
 	s.log.Info("state cleared")

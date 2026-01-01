@@ -60,7 +60,9 @@ func SetupTestDir(t *testing.T) string {
 // CleanupTestDir 清理测试目录
 func CleanupTestDir(t *testing.T, dir string) {
 	if dir != "" {
-		os.RemoveAll(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("Warning: failed to cleanup test dir %s: %v", dir, err)
+		}
 	}
 }
 
@@ -74,7 +76,7 @@ sleep 0.1
 echo "Test app finished"
 exit 0
 `
-	err := os.WriteFile(scriptPath, []byte(content), 0755)
+	err := os.WriteFile(scriptPath, []byte(content), 0700) // #nosec G306 - test script needs execute permission
 	require.NoError(t, err, "创建测试应用失败")
 	return scriptPath
 }
@@ -86,7 +88,7 @@ func CreateFailingApp(t *testing.T, workDir string) string {
 echo "This app will fail"
 exit 1
 `
-	err := os.WriteFile(scriptPath, []byte(content), 0755)
+	err := os.WriteFile(scriptPath, []byte(content), 0700) // #nosec G306 - test script needs execute permission
 	require.NoError(t, err, "创建失败应用失败")
 	return scriptPath
 }
@@ -99,7 +101,7 @@ echo "Long running app started"
 sleep 10
 echo "Long running app finished"
 `
-	err := os.WriteFile(scriptPath, []byte(content), 0755)
+	err := os.WriteFile(scriptPath, []byte(content), 0700) // #nosec G306 - test script needs execute permission
 	require.NoError(t, err, "创建长运行应用失败")
 	return scriptPath
 }
@@ -138,7 +140,7 @@ func AssertContains(t *testing.T, haystack, needle string) {
 // CreateTempFile 创建临时文件
 func CreateTempFile(t *testing.T, dir, name, content string) string {
 	path := filepath.Join(dir, name)
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0600)
 	require.NoError(t, err, "创建临时文件失败: %s", name)
 	return path
 }
@@ -154,7 +156,7 @@ func CreateTestArchive(t *testing.T, format, dir string) string {
 			"app.py":     "print('Hello from Python')",
 			"config.txt": "config=value",
 		})
-		require.NoError(t, os.WriteFile(archivePath, zipData, 0644))
+		require.NoError(t, os.WriteFile(archivePath, zipData, 0600))
 
 	case "tar":
 		// 简化：创建一个假的 tar 文件

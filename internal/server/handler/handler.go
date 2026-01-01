@@ -116,7 +116,9 @@ func (h *Handler) RestoreState() error {
 
 	// 4. 手动触发持久化以保存重启后的状态
 	if h.syncManager != nil {
-		h.syncManager.ManualPersist()
+		if err := h.syncManager.ManualPersist(); err != nil {
+			slog.Warn("failed to persist state on restore", "error", err)
+		}
 	}
 
 	return nil
@@ -192,7 +194,9 @@ func (h *Handler) extractDeployParams(r *http.Request) (string, *runtime.Process
 	autoRestart := r.FormValue("auto_restart") == "true"
 	maxRestarts := 0
 	if mr := r.FormValue("max_restarts"); mr != "" {
-		fmt.Sscanf(mr, "%d", &maxRestarts)
+		if _, err := fmt.Sscanf(mr, "%d", &maxRestarts); err != nil {
+			return "", nil, fmt.Errorf("invalid max_restarts: %v", err)
+		}
 	}
 
 	// 验证配置
@@ -258,7 +262,7 @@ func (h *Handler) prepareWorkDir(appName string) error {
 	if err := os.RemoveAll(appWorkDir); err != nil {
 		return fmt.Errorf("failed to clean work dir: %v", err)
 	}
-	if err := os.MkdirAll(appWorkDir, 0755); err != nil {
+	if err := os.MkdirAll(appWorkDir, 0750); err != nil {
 		return fmt.Errorf("failed to create work dir: %v", err)
 	}
 	return nil
@@ -280,8 +284,15 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	appWorkDir := filepath.Join(h.workDir, appName)
 	destPath := filepath.Join(appWorkDir, header.Filename)
 
+	// 验证路径安全（防止目录遍历）
+	absWorkDir, _ := filepath.Abs(appWorkDir)
+	absDestPath, _ := filepath.Abs(destPath)
+	if !strings.HasPrefix(absDestPath, absWorkDir+string(os.PathSeparator)) {
+		return fmt.Errorf("invalid file path: %s (path traversal detected)", header.Filename)
+	}
+
 	// 保存文件
-	dest, err := os.Create(destPath)
+	dest, err := os.Create(destPath) // #nosec G304 - path validated above
 	if err != nil {
 		return fmt.Errorf("failed to create file: %v", err)
 	}
@@ -290,7 +301,9 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	if _, err := io.Copy(dest, file); err != nil {
 		return fmt.Errorf("failed to save file: %v", err)
 	}
-	dest.Close()
+	if err := dest.Close(); err != nil {
+		return fmt.Errorf("failed to close file: %v", err)
+	}
 
 	// 处理压缩文件
 	if archive.IsArchive(header.Filename) {
@@ -302,8 +315,12 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 
 		if err := archive.Extract(destPath, appWorkDir); err != nil {
 			slog.Error("failed to extract archive", "error", err, "file", header.Filename)
-			os.RemoveAll(appWorkDir)
-			os.MkdirAll(appWorkDir, 0755)
+			if err := os.RemoveAll(appWorkDir); err != nil {
+				slog.Warn("failed to remove work dir", "error", err)
+			}
+			if err := os.MkdirAll(appWorkDir, 0750); err != nil {
+				slog.Warn("failed to recreate work dir", "error", err)
+			}
 			return fmt.Errorf("failed to extract archive: %v", err)
 		}
 
@@ -402,7 +419,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 
 	// 准备应用工作目录
 	appWorkDir := filepath.Join(h.workDir, appName)
-	if err := os.MkdirAll(appWorkDir, 0755); err != nil {
+	if err := os.MkdirAll(appWorkDir, 0750); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to create work dir: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -507,7 +524,10 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 	lines := 100 // 默认返回最近 100 行
 
 	if linesStr != "" {
-		fmt.Sscanf(linesStr, "%d", &lines)
+		if _, err := fmt.Sscanf(linesStr, "%d", &lines); err != nil {
+			slog.Warn("invalid lines parameter", "value", linesStr, "error", err)
+			lines = 100 // 使用默认值
+		}
 	}
 
 	// 获取日志
@@ -580,7 +600,9 @@ func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 
 	// 清理工作目录
 	appWorkDir := filepath.Join(h.workDir, appName)
-	os.RemoveAll(appWorkDir)
+	if err := os.RemoveAll(appWorkDir); err != nil {
+		slog.Warn("failed to remove work dir", "app", appName, "error", err)
+	}
 
 	// 从状态管理器移除
 	if h.syncManager != nil {
@@ -619,21 +641,25 @@ func (h *Handler) getAppNameWithDefault(r *http.Request) string {
 // sendSuccess 发送成功响应
 func (h *Handler) sendSuccess(w http.ResponseWriter, message string, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(api.Response{
+	if err := json.NewEncoder(w).Encode(api.Response{
 		Success: true,
 		Message: message,
 		Data:    data,
-	})
+	}); err != nil {
+		slog.Warn("failed to encode success response", "error", err)
+	}
 }
 
 // sendError 发送错误响应
 func (h *Handler) sendError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(api.Response{
+	if err := json.NewEncoder(w).Encode(api.Response{
 		Success: false,
 		Message: message,
-	})
+	}); err != nil {
+		slog.Warn("failed to encode error response", "error", err)
+	}
 }
 
 // GetStateSnapshot 获取所有应用的状态快照（用于持久化）

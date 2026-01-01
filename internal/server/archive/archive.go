@@ -116,12 +116,12 @@ func extractZipFile(f *zip.File, destDir string) error {
 	}
 
 	// 创建父目录
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// 创建文件
-	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode()) // #nosec G304 - path validated by safeExtractPath
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
@@ -134,8 +134,9 @@ func extractZipFile(f *zip.File, destDir string) error {
 	}
 	defer srcFile.Close()
 
-	// 复制内容
-	if _, err := io.Copy(destFile, srcFile); err != nil {
+	// 复制内容（限制大小防止解压炸弹）
+	limitedReader := io.LimitReader(srcFile, 100*1024*1024)     // 100MB limit
+	if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
@@ -144,7 +145,7 @@ func extractZipFile(f *zip.File, destDir string) error {
 
 // extractTarGz 解压 .tar.gz 文件
 func extractTarGz(archivePath, destDir string) error {
-	file, err := os.Open(archivePath)
+	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
 	if err != nil {
 		return fmt.Errorf("failed to open tar.gz: %w", err)
 	}
@@ -161,7 +162,7 @@ func extractTarGz(archivePath, destDir string) error {
 
 // extractTar 解压 .tar 文件
 func extractTar(archivePath, destDir string) error {
-	file, err := os.Open(archivePath)
+	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
 	if err != nil {
 		return fmt.Errorf("failed to open tar: %w", err)
 	}
@@ -195,28 +196,39 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			// 创建目录
-			if err := os.MkdirAll(destPath, os.FileMode(header.Mode)); err != nil {
+			mode := header.Mode
+			if mode < 0 || mode > 07777 {
+				return fmt.Errorf("invalid file mode: %d", mode)
+			}
+			if err := os.MkdirAll(destPath, os.FileMode(mode)); err != nil {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
 
 		case tar.TypeReg:
 			// 创建父目录
-			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
 
 			// 创建文件
-			destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(header.Mode))
+			mode := header.Mode
+			if mode < 0 || mode > 07777 {
+				return fmt.Errorf("invalid file mode: %d", mode)
+			}
+			destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode)) // #nosec G304 - path validated by safeExtractPath
 			if err != nil {
 				return fmt.Errorf("failed to create file: %w", err)
 			}
 
-			// 复制内容
-			if _, err := io.Copy(destFile, tr); err != nil {
-				destFile.Close()
+			// 复制内容（限制大小防止解压炸弹）
+			limitedReader := io.LimitReader(tr, 100*1024*1024)          // 100MB limit
+			if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
+				_ = destFile.Close() // ignore close error in error path
 				return fmt.Errorf("failed to copy file: %w", err)
 			}
-			destFile.Close()
+			if err := destFile.Close(); err != nil {
+				return fmt.Errorf("failed to close file: %w", err)
+			}
 			count++
 
 		default:
@@ -238,7 +250,7 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 
 // extractGzip 解压单个 .gz 文件
 func extractGzip(archivePath, destDir string) error {
-	file, err := os.Open(archivePath)
+	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
 	if err != nil {
 		return fmt.Errorf("failed to open gzip: %w", err)
 	}
@@ -259,13 +271,15 @@ func extractGzip(archivePath, destDir string) error {
 		return err
 	}
 
-	destFile, err := os.Create(destPath)
+	destFile, err := os.Create(destPath) // #nosec G304 - path validated by safeExtractPath
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer destFile.Close()
 
-	if _, err := io.Copy(destFile, gzr); err != nil {
+	// 复制内容（限制大小防止解压炸弹）
+	limitedReader := io.LimitReader(gzr, 100*1024*1024)         // 100MB limit
+	if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 

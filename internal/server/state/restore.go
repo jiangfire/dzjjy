@@ -114,7 +114,7 @@ func (rm *RestoreManager) isProcessRunning(pid int) bool {
 // isProcessRunningWindows Windows平台进程检查
 func (rm *RestoreManager) isProcessRunningWindows(pid int) bool {
 	// 使用tasklist命令检查进程是否存在
-	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid))
+	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid)) // #nosec G204 - validated integer PID
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false

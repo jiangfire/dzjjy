@@ -35,15 +35,15 @@ func main() {
 	}
 
 	// 创建目录
-	if err := os.MkdirAll(*uploadDir, 0755); err != nil {
+	if err := os.MkdirAll(*uploadDir, 0750); err != nil {
 		slog.Error("failed to create upload dir", "error", err, "dir", *uploadDir)
 		os.Exit(1)
 	}
-	if err := os.MkdirAll(*workDir, 0755); err != nil {
+	if err := os.MkdirAll(*workDir, 0750); err != nil {
 		slog.Error("failed to create work dir", "error", err, "dir", *workDir)
 		os.Exit(1)
 	}
-	if err := os.MkdirAll(*logDir, 0755); err != nil {
+	if err := os.MkdirAll(*logDir, 0750); err != nil {
 		slog.Error("failed to create log dir", "error", err, "dir", *logDir)
 		os.Exit(1)
 	}
@@ -79,7 +79,9 @@ func main() {
 	// 健康检查
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			slog.Warn("failed to write health response", "error", err)
+		}
 	})
 
 	addr := ":" + *port
@@ -166,8 +168,10 @@ func createMultiAppHandler(h *handler.Handler) http.HandlerFunc {
 func sendJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]any{
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"success": false,
 		"message": message,
-	})
+	}); err != nil {
+		slog.Warn("failed to encode error response", "error", err)
+	}
 }

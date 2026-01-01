@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,7 +113,7 @@ func (l *Logger) Start() error {
 	defer l.mu.Unlock()
 
 	// 创建日志目录
-	if err := os.MkdirAll(l.logDir, 0755); err != nil {
+	if err := os.MkdirAll(l.logDir, 0750); err != nil {
 		return fmt.Errorf("failed to create log dir: %w", err)
 	}
 
@@ -123,7 +124,7 @@ func (l *Logger) Start() error {
 	timestamp := time.Now().Format("20060102-150405")
 	logPath := filepath.Join(l.logDir, fmt.Sprintf("%s-%s.log", safeAppName, timestamp))
 
-	file, err := os.Create(logPath)
+	file, err := os.Create(logPath) // #nosec G304 - path sanitized via sanitizeFilename
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
@@ -194,7 +195,9 @@ func (l *Logger) WriteLog(logType, message string) {
 		// 写入数据
 		n, _ := l.logFile.WriteString(line)
 		l.currentFileSize += int64(n)
-		l.logFile.Sync()
+		if err := l.logFile.Sync(); err != nil {
+			slog.Warn("failed to sync log file", "error", err)
+		}
 	}
 }
 
@@ -216,7 +219,9 @@ func (l *Logger) checkAndRotate() {
 	}
 
 	// 关闭当前文件
-	l.logFile.Close()
+	if err := l.logFile.Close(); err != nil {
+		slog.Warn("failed to close log file", "error", err)
+	}
 	l.logFile = nil
 
 	// 重命名当前文件为轮转文件
@@ -238,7 +243,9 @@ func (l *Logger) checkAndRotate() {
 			}
 		}
 
-		os.Rename(currentPath, rotatedPath)
+		if err := os.Rename(currentPath, rotatedPath); err != nil {
+			slog.Warn("failed to rename log file", "from", currentPath, "to", rotatedPath, "error", err)
+		}
 	}
 
 	// 创建新文件
@@ -246,7 +253,7 @@ func (l *Logger) checkAndRotate() {
 	newTimestamp := time.Now().Format("20060102-150405")
 	newPath := filepath.Join(l.logDir, fmt.Sprintf("%s-%s.log", safeAppName, newTimestamp))
 
-	file, err := os.Create(newPath)
+	file, err := os.Create(newPath) // #nosec G304 - path sanitized via sanitizeFilename
 	if err != nil {
 		// 如果创建失败，尝试创建一个临时文件
 		file, err = os.CreateTemp(l.logDir, fmt.Sprintf("%s-*.log", safeAppName))
@@ -304,7 +311,9 @@ func (l *Logger) cleanupOldFiles() {
 	// 删除旧文件，保留最新的 MaxFiles 个
 	for i := 0; i < len(logFiles)-l.rotationConfig.MaxFiles; i++ {
 		filePath := filepath.Join(l.logDir, logFiles[i].Name())
-		os.Remove(filePath)
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to remove old log file", "file", filePath, "error", err)
+		}
 	}
 }
 
