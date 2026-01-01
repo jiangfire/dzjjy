@@ -462,11 +462,15 @@ func (m *Manager) Stop() error {
 	}
 
 	m.cmd = nil
+
+	// 获取 monitorDone 引用（在锁保护下）
+	monitorDone := m.monitorDone
 	m.mu.Unlock()
 
 	// 等待监控goroutine完成（避免死锁）
-	if m.monitorDone != nil {
-		<-m.monitorDone
+	// 注意：这里在锁外等待，避免死锁
+	if monitorDone != nil {
+		<-monitorDone
 	}
 
 	// 发送停止事件

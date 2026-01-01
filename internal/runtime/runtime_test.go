@@ -163,6 +163,11 @@ func main() {
 
 // TestManager_ManualStop_WhileRestarting 测试在重启过程中手动停止
 func TestManager_ManualStop_WhileRestarting(t *testing.T) {
+	// Skip on Windows due to permission issues with TerminateProcess
+	if goruntime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows due to TerminateProcess permission issues")
+	}
+
 	appPath := createTestApp(t, "fail-fast-app", `package main
 func main() {
 	panic("fail")

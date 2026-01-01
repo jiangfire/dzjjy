@@ -1,7 +1,7 @@
 # 架构设计
 
 > 文档更新：2026-01-01
-> 优化：移除重复内容，专注于技术架构
+> 优化：合并重复内容，精简结构
 
 ## 核心模块
 
@@ -13,7 +13,7 @@ internal/
 │   │   ├── multimanager.go   # 多应用管理器（包装 Manager）
 │   │   └── logger.go         # 双重存储（内存+文件 + 轮转）
 │   ├── archive/          # 压缩包处理
-│   │   └── archive.go        # ZIP/TAR/GZ 解压
+│   │   └── archive.go        # ZIP/TAR/GZ 解压（带安全防护）
 │   ├── auth/             # 认证
 │   │   └── auth.go           # Bearer Token + 时序攻击防护
 │   ├── handler/          # HTTP API
@@ -27,6 +27,17 @@ internal/
         └── deploy.go         # API 调用封装
 ```
 
+## 核心特性
+
+| 模块 | 关键特性 |
+|------|----------|
+| **Runtime** | 进程生命周期管理、自动重启（1秒延迟）、并发安全（sync.RWMutex）、上下文优雅关闭 |
+| **Logger** | 内存环形缓冲区（1000行）、文件持久化、自动轮转、三种日志类型（stdout/stderr/system） |
+| **Archive** | ZIP/TAR/GZ 支持、路径遍历防护、大小限制（100MB）、格式自动检测 |
+| **Auth** | Bearer Token 认证、时序攻击防护、所有端点（除 /health）需认证 |
+| **State** | 原子写入、SHA256 校验、自动备份、事件驱动同步（100ms 延迟） |
+| **Handler** | 部署流程自动化、文件上传验证、多应用支持（通过查询参数） |
+
 ## 状态持久化
 
 ### 数据流
@@ -36,9 +47,9 @@ runtime.Manager → EventNotifier → SyncManager → StateStore → state.json
                               RestoreManager (启动时)
 ```
 
-### 核心特性
+### 核心机制
 
-| 特性 | 说明 |
+| 机制 | 说明 |
 |------|------|
 | **原子写入** | 临时文件 + 重命名，防止写入中断损坏 |
 | **校验和** | SHA256 验证数据完整性，损坏时自动从备份恢复 |
@@ -85,19 +96,24 @@ func (m *Manager) monitor() {
 
 ## 日志系统
 
-### 双重存储
-- **内存**：环形缓冲区，保留最近 1000 行
-- **文件**：持久化到 `logs/{appName}/{type}-{executable}-{timestamp}.log`
-
-### 日志轮转
+### 架构
+- **双重存储**：内存环形缓冲区（1000行）+ 文件持久化
 - **自动轮转**：文件超过指定大小时自动分割
 - **保留策略**：可配置保留文件数量（默认 10 个）
-- **文件命名**：`app-20251231-150405.rotated.001.log`
 
 ### 日志类型
-- `stdout` - 标准输出
-- `stderr` - 标准错误
-- `system` - 系统事件（启动/停止/重启）
+| 类型 | 说明 | 文件命名 |
+|------|------|----------|
+| `stdout` | 标准输出 | `stdout-{executable}-{timestamp}.log` |
+| `stderr` | 标准错误 | `stderr-{executable}-{timestamp}.log` |
+| `system` | 系统事件 | `system-{executable}-{timestamp}.log` |
+
+### 轮转示例
+```
+app-20251231-150405.rotated.001.log
+app-20251231-150405.rotated.002.log
+...
+```
 
 ### 捕获方式
 ```go
@@ -113,13 +129,25 @@ func safeExtractPath(path, dest string) error {
     // 1. 转换为绝对路径
     // 2. 必须在目标目录内
     // 3. 不能包含 ".."
+    // 4. 阻止危险前缀（/etc/, C:\Windows\ 等）
 }
 ```
 
-### 认证防护
-- Bearer Token 认证
-- 时序攻击防护（恒定时间比较）
-- 所有端点除 `/health` 外均需认证
+### 命令注入防护
+```go
+func isValidExecutable(path string) bool {
+    // 1. 阻止路径遍历（..）
+    // 2. 相对路径安全（转换为绝对路径后验证）
+    // 3. 阻止系统敏感目录
+    // 4. 阻止路径遍历变种
+}
+```
+
+### 其他安全机制
+- **认证**：Bearer Token + 时序攻击防护（恒定时间比较）
+- **解压限制**：100MB 大小限制，防止解压炸弹
+- **文件权限**：可执行文件自动设置 0755 权限
+- **错误处理**：所有关键路径都有错误处理和日志记录
 
 ## 关键约束
 

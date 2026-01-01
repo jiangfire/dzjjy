@@ -1,7 +1,7 @@
 # 开发指南
 
 > 文档更新：2026-01-01
-> 来源：从根目录 CLAUDE.md 移动
+> 优化：移除重复内容，专注于开发实践
 
 This file provides guidance to developers when working with code in this repository.
 
@@ -48,40 +48,7 @@ go build -o dzjjy-server.exe ./cmd/server && go build -o dzjjy-client.exe ./cmd/
 ./dzjjy-client stop -server <url> -token <token>
 ```
 
-## Architecture Overview
-
-### Core Components
-
-**1. Process Management (`internal/server/runtime/`)**
-- `runtime.Manager`: Central process lifecycle manager
-  - Uses `context.Context` for graceful shutdown
-  - Runs monitoring in separate goroutine
-  - Uses `sync.RWMutex` for thread-safe state access
-  - Implements automatic restart with configurable limits
-  - Waits 1 second between restart attempts to avoid rapid failure loops
-
-**2. Log Management (`internal/server/runtime/logger.go`)**
-- Dual storage: in-memory ring buffer (1000 lines) + file persistence
-- Captures stdout/stderr via `cmd.StdoutPipe()` and `cmd.StderrPipe()`
-- Three log types: `stdout`, `stderr`, `system`
-- Log files named: `{type}-{executable}-{timestamp}.log`
-
-**3. Archive Handling (`internal/server/archive/`)**
-- Supports ZIP, TAR, TAR.GZ, GZ formats
-- Path traversal protection: validates all extracted paths
-- Auto-detects format by file extension
-- Extracts to work directory and removes archive after
-
-**4. HTTP Handler (`internal/server/handler/`)**
-- Deployment flow:
-  1. Stop current app if running
-  2. Clean work directory
-  3. Save uploaded file
-  4. Detect and extract if archive
-  5. Start app with runtime.Manager
-- All endpoints require Bearer token authentication (except `/health`)
-
-### Application Types
+## Application Types
 
 The system distinguishes two application types:
 
@@ -98,29 +65,6 @@ The system distinguishes two application types:
     - Java JAR: `java -jar app.jar --spring.profiles.active=prod` → executable=`java`, entry=`-jar app.jar`, args=`--spring.profiles.active=prod`
     - Python module: `python3 -m uvicorn main:app --host 0.0.0.0` → executable=`python3`, entry=`-m uvicorn main:app`, args=`--host 0.0.0.0`
     - Node with flags: `node --experimental-modules index.js --port 3000` → executable=`node`, entry=`--experimental-modules index.js`, args=`--port 3000`
-
-### Concurrency Patterns
-
-**Process Monitoring**:
-```go
-// Runs in goroutine, monitors process exit
-func (m *Manager) monitor() {
-    for {
-        select {
-        case <-m.ctx.Done():  // Graceful shutdown signal
-            return
-        default:
-            m.cmd.Wait()  // Blocks until process exits
-            // Check restart limits, delay, then restart
-        }
-    }
-}
-```
-
-**Thread Safety**:
-- All Manager state protected by `sync.RWMutex`
-- Read operations (GetPID, IsRunning, GetInfo) use `RLock()`
-- Write operations (Start, Stop, Restart) use `Lock()`
 
 ## Logging Standards
 
@@ -146,6 +90,7 @@ Always include relevant context fields (pid, type, executable, error, etc.) for 
 3. **Goroutine per process**: Each monitored process runs in its own goroutine
 4. **Context for lifecycle**: Use `context.Context` for cancellation propagation
 5. **Path traversal protection**: Always validate extracted archive paths against work directory
+6. **Security first**: Comprehensive error handling, input validation, and security checks
 
 ## API Endpoints
 
@@ -162,15 +107,15 @@ All require `Authorization: Bearer <token>` except `/health`:
 ## Important Constraints
 
 - **Development only**: Not designed for production use
-- **Single application**: Manager handles one application at a time
-- **Work directory**: Cleared on each deployment
-- **Log retention**: Only last 1000 lines in memory, rest in files
+- **Multi-application**: MultiManager supports multiple apps simultaneously
+- **Work directory**: Cleared on each deployment (per app)
+- **Log retention**: Only last 1000 lines in memory, rest in files with rotation
 - **Restart delay**: Fixed 1-second delay between restart attempts
-- **Archive extraction**: Files extracted to work directory root (no subdirectory isolation)
+- **Archive extraction**: Files extracted to work directory root
 
 ## Common Patterns
 
-**Adding new runtime support**: No code changes needed - users specify executable command and entry with runtime flags (e.g., `-executable ruby -entry script.rb` or `-executable java -entry "-jar app.jar"`)
+**Adding new runtime support**: No code changes needed - users specify executable command and entry with runtime flags (e.g., `-executable ruby -entry script.rb` or `-executable java -entry " -jar app.jar"`)
 
 **Extending archive formats**: Add handler in `internal/server/archive/archive.go` and update `IsArchive()` and `Extract()` switch statements
 
@@ -182,61 +127,30 @@ All require `Authorization: Bearer <token>` except `/health`:
 
 ## Testing
 
-### Test Structure
+For comprehensive testing information, see [TESTING.md](./TESTING.md).
 
-The project uses comprehensive testing with the following structure:
-
-```
-internal/
-├── server/
-│   ├── archive/
-│   │   └── archive_test.go      # 18 tests, 81.1% coverage
-│   ├── auth/
-│   │   └── auth_test.go         # 14 tests, 100% coverage
-│   └── runtime/
-│       ├── logger_test.go       # 16 tests, 100% coverage
-│       └── runtime.go           # Tested via internal/runtime
-├── runtime/
-│   └── runtime_test.go          # 14 tests for Manager
-```
-
-### Running Tests
-
+Quick commands:
 ```bash
 # All tests
 go test ./...
 
-# Specific modules
-go test ./internal/server/archive/...
-go test ./internal/server/auth/...
-go test ./internal/server/runtime/...
-go test ./internal/runtime/...
-
 # With coverage
 go test -cover ./internal/server/...
-go test -coverprofile=coverage.out ./internal/server/...
+
+# Generate HTML report
+go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### Test Design Principles
+## Security
 
-1. **Windows Compatibility**: Use Go binaries instead of shell scripts
-2. **Isolated Testing**: Each test uses temporary directories
-3. **Comprehensive Coverage**: Test success, failure, and edge cases
-4. **Concurrent Safety**: Tests verify thread-safe operations
-5. **Auto Cleanup**: TestMain handles setup/teardown
+This project has undergone comprehensive security hardening:
 
-### Test Dependencies
+- ✅ **G301/G302/G306**: Directory and file permission fixes
+- ✅ **G304**: Path traversal protection (archive extraction, file operations)
+- ✅ **G204**: Command injection prevention (executable validation)
+- ✅ **G115**: Integer overflow protection (file mode validation)
+- ✅ **G110**: Decompression bomb prevention (100MB size limit)
+- ✅ **G104**: Comprehensive error handling
 
-- `github.com/stretchr/testify/assert` - Flexible assertions
-- `github.com/stretchr/testify/require` - Fail-fast assertions
-
-### Adding New Tests
-
-When adding functionality:
-1. Create test file in same package as implementation
-2. Use `TestMain` for shared setup/teardown if needed
-3. Test all public functions
-4. Include edge cases (empty, invalid, boundary values)
-5. Verify concurrent access safety
-6. Use helper functions in `test/helpers.go` when possible
+See ARCHITECTURE.md for security design details.
