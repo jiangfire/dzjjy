@@ -35,7 +35,7 @@ func safeExtractPath(destDir, entryPath string) (string, error) {
 	}
 
 	// 检查符号链接（防止通过符号链接逃逸）
-	if info, err := os.Lstat(destPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(destPath); err == nil && info.Mode()&os.ModeSymlink != 0 { // #nosec G703 - destPath is validated to stay under destDir
 		return "", fmt.Errorf("symbolic links not allowed: %s", entryPath)
 	}
 
@@ -189,7 +189,7 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 		destPath, err := safeExtractPath(destDir, header.Name)
 		if err != nil {
 			invalidPaths = append(invalidPaths, header.Name)
-			slog.Warn("skipping invalid path", "path", header.Name, "error", err)
+			slog.Warn("skipping invalid path", "path", header.Name, "error", err) // #nosec G706 - archive entry names are operational diagnostics
 			continue
 		}
 
@@ -200,13 +200,13 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 			if mode < 0 || mode > 07777 {
 				return fmt.Errorf("invalid file mode: %d", mode)
 			}
-			if err := os.MkdirAll(destPath, os.FileMode(mode)); err != nil {
+			if err := os.MkdirAll(destPath, os.FileMode(mode)); err != nil { // #nosec G703 - destPath is validated by safeExtractPath
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
 
 		case tar.TypeReg:
 			// 创建父目录
-			if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+			if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil { // #nosec G703 - destPath is validated by safeExtractPath
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
 
@@ -215,7 +215,7 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 			if mode < 0 || mode > 07777 {
 				return fmt.Errorf("invalid file mode: %d", mode)
 			}
-			destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode)) // #nosec G304 - path validated by safeExtractPath
+			destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode)) // #nosec G304,G703 - path validated by safeExtractPath
 			if err != nil {
 				return fmt.Errorf("failed to create file: %w", err)
 			}
@@ -232,6 +232,7 @@ func extractTarReader(tr *tar.Reader, destDir string) error {
 			count++
 
 		default:
+			// #nosec G706 - archive entry names are operational diagnostics
 			slog.Warn("skipping unsupported file type",
 				"name", header.Name,
 				"type", header.Typeflag,

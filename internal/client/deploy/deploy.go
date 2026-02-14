@@ -38,7 +38,7 @@ func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, e
 
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G704 - serverURL is an explicit client configuration target
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -118,7 +118,7 @@ func (c *Client) Deploy(appName, filePath, appType, executable, entry, args stri
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G704 - serverURL is an explicit client configuration target
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
@@ -283,7 +283,7 @@ func (c *Client) Remove(appName string) error {
 
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G704 - serverURL is an explicit client configuration target
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}

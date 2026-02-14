@@ -180,6 +180,9 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) extractDeployParams(r *http.Request) (string, *runtime.ProcessConfig, error) {
 	// 从 URL 路径获取应用名称
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		return "", nil, err
+	}
 
 	// 解析multipart表单
 	if err := r.ParseMultipartForm(100 << 20); err != nil { // 100MB
@@ -259,10 +262,10 @@ func (h *Handler) validateAppConfig(appType, executable, entry string, maxRestar
 // prepareWorkDir 准备应用工作目录
 func (h *Handler) prepareWorkDir(appName string) error {
 	appWorkDir := filepath.Join(h.workDir, appName)
-	if err := os.RemoveAll(appWorkDir); err != nil {
+	if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
 		return fmt.Errorf("failed to clean work dir: %v", err)
 	}
-	if err := os.MkdirAll(appWorkDir, 0750); err != nil {
+	if err := os.MkdirAll(appWorkDir, 0750); err != nil { // #nosec G703 - appName is validated by validateAppName
 		return fmt.Errorf("failed to create work dir: %v", err)
 	}
 	return nil
@@ -292,7 +295,7 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	}
 
 	// 保存文件
-	dest, err := os.Create(destPath) // #nosec G304 - path validated above
+	dest, err := os.Create(destPath) // #nosec G304,G703 - path validated above
 	if err != nil {
 		return fmt.Errorf("failed to create file: %v", err)
 	}
@@ -312,14 +315,14 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	noExt := execExt == ""
 	isExecExt := execExt == ".exe" || execExt == ".bin"
 	if noExt || isExecExt {
-		// #nosec G302 - executable files need 0755 permissions
-		if err := os.Chmod(destPath, 0755); err != nil {
-			slog.Warn("failed to set executable permissions", "file", destPath, "error", err)
+		if err := os.Chmod(destPath, 0755); err != nil { // #nosec G302,G703 - executable artifact requires execute bit and path is validated
+			slog.Warn("failed to set executable permissions", "error", err)
 		}
 	}
 
 	// 处理压缩文件
 	if archive.IsArchive(header.Filename) {
+		// #nosec G706 - app/file names are operational diagnostics
 		slog.Info("detected archive file, extracting",
 			"app", appName,
 			"filename", header.Filename,
@@ -327,21 +330,23 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 		)
 
 		if err := archive.Extract(destPath, appWorkDir); err != nil {
+			// #nosec G706 - app/file names are operational diagnostics
 			slog.Error("failed to extract archive", "error", err, "file", header.Filename)
-			if err := os.RemoveAll(appWorkDir); err != nil {
+			if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
 				slog.Warn("failed to remove work dir", "error", err)
 			}
-			if err := os.MkdirAll(appWorkDir, 0750); err != nil {
+			if err := os.MkdirAll(appWorkDir, 0750); err != nil { // #nosec G703 - appName is validated by validateAppName
 				slog.Warn("failed to recreate work dir", "error", err)
 			}
 			return fmt.Errorf("failed to extract archive: %v", err)
 		}
 
-		if err := os.Remove(destPath); err != nil {
-			slog.Error("failed to remove archive file", "error", err, "file", destPath)
+		if err := os.Remove(destPath); err != nil { // #nosec G703 - path validated above
+			slog.Error("failed to remove archive file", "error", err)
 			return fmt.Errorf("failed to remove archive file: %v", err)
 		}
 
+		// #nosec G706 - app/file names are operational diagnostics
 		slog.Info("archive extracted successfully", "app", appName, "file", header.Filename)
 	}
 
@@ -358,6 +363,30 @@ func (h *Handler) validateFilename(filename string) error {
 	}
 	if strings.ContainsAny(filename, ":\\<>|\"*?") {
 		return fmt.Errorf("invalid filename")
+	}
+	return nil
+}
+
+func validateAppName(appName string) error {
+	if appName == "" {
+		return fmt.Errorf("app name cannot be empty")
+	}
+	if len(appName) > 64 {
+		return fmt.Errorf("app name too long")
+	}
+	if appName == "." || appName == ".." {
+		return fmt.Errorf("invalid app name")
+	}
+	if strings.Contains(appName, "..") || strings.ContainsAny(appName, `/\`) {
+		return fmt.Errorf("invalid app name")
+	}
+	for _, ch := range appName {
+		isLower := ch >= 'a' && ch <= 'z'
+		isUpper := ch >= 'A' && ch <= 'Z'
+		isDigit := ch >= '0' && ch <= '9'
+		if !isLower && !isUpper && !isDigit && ch != '-' && ch != '_' && ch != '.' {
+			return fmt.Errorf("invalid app name")
+		}
 	}
 	return nil
 }
@@ -393,6 +422,10 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.multiManager.StopApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
@@ -411,6 +444,10 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	var req api.DeployRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -432,7 +469,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 
 	// 准备应用工作目录
 	appWorkDir := filepath.Join(h.workDir, appName)
-	if err := os.MkdirAll(appWorkDir, 0750); err != nil {
+	if err := os.MkdirAll(appWorkDir, 0750); err != nil { // #nosec G703 - appName is validated by validateAppName
 		h.sendError(w, fmt.Sprintf("failed to create work dir: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -477,6 +514,10 @@ func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.multiManager.RestartApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to restart: %v", err), http.StatusInternalServerError)
@@ -501,6 +542,10 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	info, exists := h.multiManager.GetAppInfo(appName)
 	if !exists {
@@ -531,6 +576,10 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// 获取查询参数
 	linesStr := r.URL.Query().Get("lines")
@@ -538,7 +587,7 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 
 	if linesStr != "" {
 		if _, err := fmt.Sscanf(linesStr, "%d", &lines); err != nil {
-			slog.Warn("invalid lines parameter", "value", linesStr, "error", err)
+			slog.Warn("invalid lines parameter", "error", err)
 			lines = 100 // 使用默认值
 		}
 	}
@@ -601,6 +650,10 @@ func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appName := h.getAppNameWithDefault(r)
+	if err := validateAppName(appName); err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// 停止应用
 	if err := h.multiManager.StopApp(appName); err != nil {
@@ -613,8 +666,8 @@ func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 
 	// 清理工作目录
 	appWorkDir := filepath.Join(h.workDir, appName)
-	if err := os.RemoveAll(appWorkDir); err != nil {
-		slog.Warn("failed to remove work dir", "app", appName, "error", err)
+	if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
+		slog.Warn("failed to remove work dir", "error", err)
 	}
 
 	// 从状态管理器移除

@@ -42,7 +42,7 @@ func main() {
 	case "remove":
 		removeCmd()
 	default:
-		slog.Error("unknown command", "command", command)
+		slog.Error("unknown command") // #nosec G706 - avoid logging raw user input
 		printUsage()
 		os.Exit(1)
 	}

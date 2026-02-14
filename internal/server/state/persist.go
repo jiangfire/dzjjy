@@ -53,7 +53,7 @@ func (s *StateStore) releaseLock() {
 		if err := s.lockFile.Close(); err != nil {
 			s.log.Warn("failed to close lock file", "error", err)
 		}
-		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) { // #nosec G703 - lockPath is derived from configured stateFile
 			s.log.Warn("failed to remove lock file", "error", err)
 		}
 		s.lockFile = nil
