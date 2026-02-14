@@ -42,7 +42,7 @@ func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result api.Response
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -63,7 +63,7 @@ func (c *Client) Deploy(appName, filePath, appType, executable, entry, args stri
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 创建multipart表单
 	body := &bytes.Buffer{}
@@ -122,7 +122,7 @@ func (c *Client) Deploy(appName, filePath, appType, executable, entry, args stri
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 解析响应
 	var result api.Response
@@ -287,7 +287,7 @@ func (c *Client) Remove(appName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result api.Response
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

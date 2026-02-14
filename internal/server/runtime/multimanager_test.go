@@ -48,7 +48,7 @@ func main() {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mainFile := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(mainFile, []byte(mainCode), 0644); err != nil {
@@ -74,7 +74,7 @@ func TestMultiManager_StartApp(t *testing.T) {
 	// 创建临时目录
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	workDir := filepath.Join(tmpDir, "work")
@@ -116,7 +116,7 @@ func TestMultiManager_StartApp(t *testing.T) {
 func TestMultiManager_MultipleApps(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logDir, 0755))
@@ -129,7 +129,7 @@ func TestMultiManager_MultipleApps(t *testing.T) {
 	app2Path := filepath.Join(tmpDir, "app2.exe")
 
 	// 使用 Go 编译简单的测试程序
-	err = createTestBinary(app1Path, "sleep", "1")
+	err = createTestBinary(app1Path, "sleep", "5")
 	if err != nil {
 		t.Skipf("Skipping test - cannot create test binary: %v", err)
 		return
@@ -170,15 +170,16 @@ func TestMultiManager_MultipleApps(t *testing.T) {
 	// 验证不能重复启动同名应用
 	if _, exists := mm.GetApp("app1"); exists {
 		err := mm.StartApp(ctx, "app1", config1)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "already running")
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "already running")
+		}
 	}
 }
 
 func TestMultiManager_StopApp(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	workDir := filepath.Join(tmpDir, "work")
@@ -219,7 +220,7 @@ func TestMultiManager_StopApp(t *testing.T) {
 func TestMultiManager_RestartApp(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	workDir := filepath.Join(tmpDir, "work")
@@ -262,7 +263,7 @@ func TestMultiManager_RestartApp(t *testing.T) {
 func TestMultiManager_GetAppInfo(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	workDir := filepath.Join(tmpDir, "work")
@@ -301,7 +302,7 @@ func TestMultiManager_GetAppInfo(t *testing.T) {
 func TestMultiManager_RemoveApp(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logDir, 0755))
@@ -332,7 +333,7 @@ func TestMultiManager_RemoveApp(t *testing.T) {
 func TestMultiManager_StopAll(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	workDir := filepath.Join(tmpDir, "work")
@@ -370,7 +371,7 @@ func TestMultiManager_StopAll(t *testing.T) {
 func TestMultiManager_ConcurrentAccess(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logDir, 0755))
@@ -398,7 +399,7 @@ func TestMultiManager_ConcurrentAccess(t *testing.T) {
 func TestMultiManager_EmptyOperations(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logDir, 0755))

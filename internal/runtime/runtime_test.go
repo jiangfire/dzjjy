@@ -26,10 +26,10 @@ func TestMain(m *testing.M) {
 	testLogs = filepath.Join(cwd, "test-logs")
 
 	// 测试前清理
-	os.RemoveAll(testWorkspace)
-	os.RemoveAll(testLogs)
-	os.MkdirAll(testWorkspace, 0755)
-	os.MkdirAll(testLogs, 0755)
+	_ = os.RemoveAll(testWorkspace)
+	_ = os.RemoveAll(testLogs)
+	_ = os.MkdirAll(testWorkspace, 0755)
+	_ = os.MkdirAll(testLogs, 0755)
 
 	// 编译一个简单的测试程序
 	testBinary = filepath.Join(testWorkspace, "test-app.exe")
@@ -45,8 +45,8 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// 测试后清理
-	os.RemoveAll(testWorkspace)
-	os.RemoveAll(testLogs)
+	_ = os.RemoveAll(testWorkspace)
+	_ = os.RemoveAll(testLogs)
 
 	os.Exit(code)
 }
@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 // createTestApp 创建一个 Go 测试应用
 func createTestApp(t *testing.T, name, mainCode string) string {
 	appDir := filepath.Join(testWorkspace, name)
-	os.MkdirAll(appDir, 0755)
+	require.NoError(t, os.MkdirAll(appDir, 0755))
 	mainFile := filepath.Join(appDir, "main.go")
 	err := os.WriteFile(mainFile, []byte(mainCode), 0644)
 	require.NoError(t, err, "创建测试应用源码失败")
@@ -131,7 +131,7 @@ func main() {
 	assert.Contains(t, err.Error(), "already running", "错误信息应该包含'already running'")
 
 	// 清理
-	manager.Stop()
+	require.NoError(t, manager.Stop())
 }
 
 // TestManager_AutoRestart_Limit 测试自动重启限制
@@ -305,7 +305,7 @@ func main() {
 	assert.True(t, manager.IsRunning())
 
 	// 清理
-	manager.Stop()
+	require.NoError(t, manager.Stop())
 }
 
 // TestManager_GetLogs 测试日志获取
@@ -422,7 +422,7 @@ func main() {
 	assert.GreaterOrEqual(t, uptime, int64(0), "运行时间应该大于等于0")
 
 	// 清理
-	manager.Stop()
+	require.NoError(t, manager.Stop())
 }
 
 // TestManager_Stop_NotRunning 测试停止未运行的进程
@@ -448,9 +448,13 @@ func TestManager_Restart_NotRunning(t *testing.T) {
 // TestManager_GetLogFile 测试获取日志文件路径
 func TestManager_GetLogFile(t *testing.T) {
 	appPath := createTestApp(t, "logfile-app", `package main
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 func main() {
 	fmt.Println("test")
+	time.Sleep(5 * time.Second)
 }
 `)
 
@@ -473,5 +477,5 @@ func main() {
 	assert.Contains(t, logFile, testLogs, "路径应该包含日志目录")
 
 	// 清理
-	manager.Stop()
+	require.NoError(t, manager.Stop())
 }

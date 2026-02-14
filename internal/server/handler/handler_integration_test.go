@@ -25,7 +25,7 @@ func TestMultiAppIntegration(t *testing.T) {
 	// 创建临时目录
 	tmpDir, err := os.MkdirTemp("", "handler-integration-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	uploadDir := filepath.Join(tmpDir, "uploads")
 	workDir := filepath.Join(tmpDir, "workspace")
@@ -168,7 +168,7 @@ func main() {
 func TestStatePersistence(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-persist-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	workDir := filepath.Join(tmpDir, "work")
 	logDir := filepath.Join(tmpDir, "logs")
@@ -188,13 +188,14 @@ func TestStatePersistence(t *testing.T) {
 
 	// 创建测试服务器
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/apps/test/deploy" {
+		switch r.URL.Path {
+		case "/api/v1/apps/test/deploy":
 			h.Deploy(w, r)
-		} else if r.URL.Path == "/api/v1/apps/test/status" {
+		case "/api/v1/apps/test/status":
 			h.Status(w, r)
-		} else if r.URL.Path == "/api/v1/apps/test/stop" {
+		case "/api/v1/apps/test/stop":
 			h.Stop(w, r)
-		} else {
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -281,7 +282,7 @@ func deployApp(t *testing.T, serverURL, appName, filePath, appType, executable, 
 	// 添加文件
 	file, err := os.Open(filePath)
 	require.NoError(t, err)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
 	require.NoError(t, err)
@@ -289,17 +290,17 @@ func deployApp(t *testing.T, serverURL, appName, filePath, appType, executable, 
 	require.NoError(t, err)
 
 	// 添加字段
-	writer.WriteField("type", appType)
-	writer.WriteField("executable", executable)
+	require.NoError(t, writer.WriteField("type", appType))
+	require.NoError(t, writer.WriteField("executable", executable))
 	if entry != "" {
-		writer.WriteField("entry", entry)
+		require.NoError(t, writer.WriteField("entry", entry))
 	}
 	if args != "" {
-		writer.WriteField("args", args)
+		require.NoError(t, writer.WriteField("args", args))
 	}
 	if autoRestart {
-		writer.WriteField("auto_restart", "true")
-		writer.WriteField("max_restarts", "5")
+		require.NoError(t, writer.WriteField("auto_restart", "true"))
+		require.NoError(t, writer.WriteField("max_restarts", "5"))
 	}
 
 	require.NoError(t, writer.Close())
@@ -313,7 +314,7 @@ func deployApp(t *testing.T, serverURL, appName, filePath, appType, executable, 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 验证响应
 	var result api.Response
@@ -326,7 +327,7 @@ func getStatus(t *testing.T, serverURL, appName string) api.StatusResponse {
 	url := serverURL + "/api/v1/apps/" + appName + "/status"
 	resp, err := http.Get(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result api.Response
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -336,7 +337,7 @@ func getStatus(t *testing.T, serverURL, appName string) api.StatusResponse {
 	// 解析 status 数据
 	dataBytes, _ := json.Marshal(result.Data)
 	var status api.StatusResponse
-	json.Unmarshal(dataBytes, &status)
+	require.NoError(t, json.Unmarshal(dataBytes, &status))
 
 	return status
 }
@@ -345,7 +346,7 @@ func listApps(t *testing.T, serverURL string) map[string]api.StatusResponse {
 	url := serverURL + "/api/v1/apps"
 	resp, err := http.Get(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result api.Response
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -355,7 +356,7 @@ func listApps(t *testing.T, serverURL string) map[string]api.StatusResponse {
 	// 解析 apps 数据
 	dataBytes, _ := json.Marshal(result.Data)
 	var listData map[string]interface{}
-	json.Unmarshal(dataBytes, &listData)
+	require.NoError(t, json.Unmarshal(dataBytes, &listData))
 
 	appsRaw, ok := listData["apps"].(map[string]interface{})
 	if !ok {
@@ -366,7 +367,7 @@ func listApps(t *testing.T, serverURL string) map[string]api.StatusResponse {
 	for name, infoRaw := range appsRaw {
 		infoBytes, _ := json.Marshal(infoRaw)
 		var info api.StatusResponse
-		json.Unmarshal(infoBytes, &info)
+		require.NoError(t, json.Unmarshal(infoBytes, &info))
 		apps[name] = info
 	}
 
@@ -381,7 +382,7 @@ func stopApp(t *testing.T, serverURL, appName string) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result api.Response
 	err = json.NewDecoder(resp.Body).Decode(&result)

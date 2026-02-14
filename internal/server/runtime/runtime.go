@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -444,8 +446,15 @@ func (m *Manager) Stop() error {
 	if m.cmd != nil && m.cmd.Process != nil {
 		pid = m.cmd.Process.Pid
 		if err := m.cmd.Process.Kill(); err != nil {
-			m.mu.Unlock()
-			return fmt.Errorf("failed to kill process: %w", err)
+			// 进程可能已退出：Windows 上有时会返回 "Access is denied"
+			isProcessDone := errors.Is(err, os.ErrProcessDone)
+			isWindowsAccessDenied := os.PathSeparator == '\\' &&
+				strings.Contains(strings.ToLower(err.Error()), "access is denied")
+			if !isProcessDone && !isWindowsAccessDenied {
+				m.mu.Unlock()
+				return fmt.Errorf("failed to kill process: %w", err)
+			}
+			slog.Warn("process already exited before kill completed", "pid", pid, "error", err)
 		}
 		slog.Info("process stopped", "pid", pid)
 		if m.logger != nil {

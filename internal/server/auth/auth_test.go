@@ -18,7 +18,8 @@ func TestMiddleware_Authenticate_Success(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, err := w.Write([]byte("OK"))
+		assert.NoError(t, err)
 	}
 
 	// 创建带认证的请求
@@ -317,7 +318,8 @@ func TestMiddleware_Authenticate_HeadersPreserved(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom-Header", "custom-value")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("response body"))
+		_, err := w.Write([]byte("response body"))
+		assert.NoError(t, err)
 	}
 
 	req := httptest.NewRequest("GET", "/test", nil)

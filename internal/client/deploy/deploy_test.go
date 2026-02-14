@@ -28,7 +28,7 @@ func setupTestDir(t *testing.T, prefix string) string {
 	dir, err := os.MkdirTemp("", prefix)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 	})
 	return dir
 }
@@ -44,6 +44,11 @@ func createTestFile(t *testing.T, dir, name, content string) string {
 // mockServer 创建模拟服务器
 func mockServer(t *testing.T, handlerFunc http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handlerFunc)
+}
+
+func writeResponse(t *testing.T, w http.ResponseWriter, resp api.Response) {
+	t.Helper()
+	require.NoError(t, json.NewEncoder(w).Encode(resp))
 }
 
 // ==================== NewClient 测试 ====================
@@ -69,13 +74,13 @@ func TestDeploy_Success(t *testing.T) {
 
 		// 返回成功响应
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "deployment successful",
 			Data: map[string]any{
 				"pid": 12345,
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -107,10 +112,10 @@ func TestDeploy_WithAllOptions(t *testing.T) {
 		assert.Equal(t, "5", r.FormValue("max_restarts"))
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -138,10 +143,10 @@ func TestDeploy_FileNotFound(t *testing.T) {
 func TestDeploy_ServerError(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: false,
 			Message: "internal server error",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -158,7 +163,8 @@ func TestDeploy_ServerError(t *testing.T) {
 func TestDeploy_InvalidResponseJSON(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("invalid json"))
+		_, err := w.Write([]byte("invalid json"))
+		require.NoError(t, err)
 	})
 	defer server.Close()
 
@@ -205,10 +211,10 @@ func TestStop_Success(t *testing.T) {
 		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "application stopped",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -220,10 +226,10 @@ func TestStop_Success(t *testing.T) {
 func TestStop_Failure(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: false,
 			Message: "no running application",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -247,13 +253,13 @@ func TestRestart_Success(t *testing.T) {
 		assert.Equal(t, "POST", r.Method)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "application restarted",
 			Data: map[string]any{
 				"pid": 54321,
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -265,10 +271,10 @@ func TestRestart_Success(t *testing.T) {
 func TestRestart_Failure(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: false,
 			Message: "no running application",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -286,7 +292,7 @@ func TestLogs_Success(t *testing.T) {
 		assert.Equal(t, "50", r.URL.Query().Get("lines"))
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
@@ -296,7 +302,7 @@ func TestLogs_Success(t *testing.T) {
 				},
 				"count": 2,
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -311,14 +317,14 @@ func TestLogs_Success(t *testing.T) {
 func TestLogs_EmptyLogs(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
 				"logs":  []any{},
 				"count": 0,
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -332,13 +338,13 @@ func TestLogs_EmptyLogs(t *testing.T) {
 func TestLogs_InvalidResponseFormat(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
 				"logs": "not an array", // 错误格式
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -352,11 +358,11 @@ func TestLogs_InvalidResponseFormat(t *testing.T) {
 func TestLogs_LogsWithoutLogsField(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
 			Data:    map[string]any{},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -370,7 +376,7 @@ func TestLogs_LogsWithoutLogsField(t *testing.T) {
 func TestLogs_LogsWithInvalidMapFormat(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
@@ -379,7 +385,7 @@ func TestLogs_LogsWithInvalidMapFormat(t *testing.T) {
 					map[string]any{"type": "stdout", "message": "valid"},
 				},
 			},
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -398,7 +404,7 @@ func TestStatus_Success(t *testing.T) {
 		assert.Equal(t, "GET", r.Method)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
@@ -430,7 +436,7 @@ func TestStatus_Success(t *testing.T) {
 func TestStatus_Stopped(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 			Data: map[string]any{
@@ -458,7 +464,7 @@ func TestStatus_Stopped(t *testing.T) {
 func TestStatus_InvalidResponseData(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 			Data:    "not a map", // 无效格式
@@ -502,7 +508,7 @@ func TestDoRequest_Timeout(t *testing.T) {
 func TestDeploy_EmptyFilename(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 		})
@@ -525,7 +531,7 @@ func TestDeploy_LargeFile(t *testing.T) {
 		require.NoError(t, err)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 		})
@@ -550,13 +556,13 @@ func TestDeploy_SpecialCharactersInFilename(t *testing.T) {
 		// 验证文件名被正确处理
 		file, _, err := r.FormFile("file")
 		require.NoError(t, err)
-		file.Close()
+		require.NoError(t, file.Close())
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		require.NoError(t, json.NewEncoder(w).Encode(api.Response{
 			Success: true,
 			Message: "ok",
-		})
+		}))
 	})
 	defer server.Close()
 
@@ -574,7 +580,7 @@ func TestDeploy_SpecialCharactersInFilename(t *testing.T) {
 func TestClient_ConcurrentOperations(t *testing.T) {
 	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 			Data:    map[string]any{"pid": 12345},
@@ -624,7 +630,7 @@ func TestErrorMessageFormat(t *testing.T) {
 			name: "deployment failed",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(api.Response{
+				writeResponse(t, w, api.Response{
 					Success: false,
 					Message: "invalid configuration",
 				})
@@ -635,7 +641,7 @@ func TestErrorMessageFormat(t *testing.T) {
 			name: "request failed",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(api.Response{
+				writeResponse(t, w, api.Response{
 					Success: false,
 					Message: "authentication required",
 				})
@@ -729,7 +735,7 @@ func TestHTTPMethodValidation(t *testing.T) {
 				assert.Equal(t, tt.path, r.URL.Path)
 
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(api.Response{
+				writeResponse(t, w, api.Response{
 					Success: true,
 					Message: "ok",
 					Data:    map[string]any{},
@@ -794,7 +800,7 @@ func TestAuthorizationHeader(t *testing.T) {
 				assert.Equal(t, "Bearer test-token", auth)
 
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(api.Response{
+				writeResponse(t, w, api.Response{
 					Success: true,
 					Message: "ok",
 				})
@@ -817,7 +823,7 @@ func TestEmptyToken(t *testing.T) {
 		assert.Equal(t, "Bearer", auth)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(api.Response{
+		writeResponse(t, w, api.Response{
 			Success: true,
 			Message: "ok",
 		})
@@ -845,7 +851,7 @@ func TestServerURLVariations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(api.Response{
+				writeResponse(t, w, api.Response{
 					Success: true,
 					Message: "ok",
 				})

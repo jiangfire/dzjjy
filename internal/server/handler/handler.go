@@ -274,7 +274,7 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 验证文件名
 	if err := h.validateFilename(header.Filename); err != nil {
@@ -296,7 +296,7 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create file: %v", err)
 	}
-	defer dest.Close()
+	defer func() { _ = dest.Close() }()
 
 	if _, err := io.Copy(dest, file); err != nil {
 		return fmt.Errorf("failed to save file: %v", err)

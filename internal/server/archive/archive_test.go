@@ -21,12 +21,12 @@ func TestMain(m *testing.M) {
 	// 创建测试目录
 	cwd, _ := os.Getwd()
 	testDir = filepath.Join(cwd, "test-archive")
-	os.RemoveAll(testDir)
-	os.MkdirAll(testDir, 0755)
+	_ = os.RemoveAll(testDir)
+	_ = os.MkdirAll(testDir, 0755)
 
 	code := m.Run()
 
-	os.RemoveAll(testDir)
+	_ = os.RemoveAll(testDir)
 	os.Exit(code)
 }
 
@@ -35,7 +35,7 @@ func createTestZip(t *testing.T, files map[string]string) string {
 	path := filepath.Join(testDir, "test.zip")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	w := zip.NewWriter(f)
 	for name, content := range files {
@@ -53,7 +53,7 @@ func createTestTar(t *testing.T, files map[string]string) string {
 	path := filepath.Join(testDir, "test.tar")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	tw := tar.NewWriter(f)
 	for name, content := range files {
@@ -75,7 +75,7 @@ func createTestTarGz(t *testing.T, files map[string]string) string {
 	path := filepath.Join(testDir, "test.tar.gz")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	gzw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gzw)
@@ -101,7 +101,7 @@ func createTestGz(t *testing.T, content string) string {
 	path := filepath.Join(testDir, "test.txt.gz")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	gzw := gzip.NewWriter(f)
 	_, err = gzw.Write([]byte(content))
@@ -115,21 +115,27 @@ func createMaliciousZip(t *testing.T) string {
 	path := filepath.Join(testDir, "malicious.zip")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	w := zip.NewWriter(f)
 
 	// 添加正常文件
-	writer, _ := w.Create("safe.txt")
-	writer.Write([]byte("safe content"))
+	writer, err := w.Create("safe.txt")
+	require.NoError(t, err)
+	_, err = writer.Write([]byte("safe content"))
+	require.NoError(t, err)
 
 	// 添加路径遍历文件
-	writer, _ = w.Create("../etc/passwd")
-	writer.Write([]byte("malicious"))
+	writer, err = w.Create("../etc/passwd")
+	require.NoError(t, err)
+	_, err = writer.Write([]byte("malicious"))
+	require.NoError(t, err)
 
 	// 添加绝对路径
-	writer, _ = w.Create("/absolute/path.txt")
-	writer.Write([]byte("malicious"))
+	writer, err = w.Create("/absolute/path.txt")
+	require.NoError(t, err)
+	_, err = writer.Write([]byte("malicious"))
+	require.NoError(t, err)
 
 	require.NoError(t, w.Close())
 	return path
@@ -140,23 +146,25 @@ func createMaliciousTarGz(t *testing.T) string {
 	path := filepath.Join(testDir, "malicious.tar.gz")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { assert.NoError(t, f.Close()) }()
 
 	gzw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gzw)
 
 	// 正常文件
 	header := &tar.Header{Name: "safe.txt", Mode: 0644, Size: 12}
-	tw.WriteHeader(header)
-	tw.Write([]byte("safe content"))
+	require.NoError(t, tw.WriteHeader(header))
+	_, err = tw.Write([]byte("safe content"))
+	require.NoError(t, err)
 
 	// 路径遍历
-	header = &tar.Header{Name: "../etc/passwd", Mode: 0644, Size: 10}
-	tw.WriteHeader(header)
-	tw.Write([]byte("malicious"))
+	header = &tar.Header{Name: "../etc/passwd", Mode: 0644, Size: int64(len("malicious"))}
+	require.NoError(t, tw.WriteHeader(header))
+	_, err = tw.Write([]byte("malicious"))
+	require.NoError(t, err)
 
-	tw.Close()
-	gzw.Close()
+	require.NoError(t, tw.Close())
+	require.NoError(t, gzw.Close())
 	return path
 }
 
@@ -193,7 +201,7 @@ func TestExtract_Zip(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "zip-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
@@ -216,7 +224,7 @@ func TestExtract_Tar(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "tar-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(tarPath, destDir)
 	require.NoError(t, err)
@@ -233,7 +241,7 @@ func TestExtract_TarGz(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "targz-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(tarGzPath, destDir)
 	require.NoError(t, err)
@@ -247,7 +255,7 @@ func TestExtract_Gz(t *testing.T) {
 	gzPath := createTestGz(t, "compressed content")
 
 	destDir := filepath.Join(testDir, "gz-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(gzPath, destDir)
 	require.NoError(t, err)
@@ -263,7 +271,7 @@ func TestExtract_Gz(t *testing.T) {
 // TestExtract_UnsupportedFormat 测试不支持的格式
 func TestExtract_UnsupportedFormat(t *testing.T) {
 	destDir := filepath.Join(testDir, "unsupported-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract("test.txt", destDir)
 	require.Error(t, err)
@@ -275,7 +283,7 @@ func TestExtract_MaliciousZip(t *testing.T) {
 	zipPath := createMaliciousZip(t)
 
 	destDir := filepath.Join(testDir, "malicious-zip-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 
@@ -296,7 +304,7 @@ func TestExtract_MaliciousTarGz(t *testing.T) {
 	tarGzPath := createMaliciousTarGz(t)
 
 	destDir := filepath.Join(testDir, "malicious-targz-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(tarGzPath, destDir)
 
@@ -359,7 +367,7 @@ func TestSafeExtractPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			zipPath := createTestZip(t, tt.files)
 			destDir := filepath.Join(testDir, "safe-test-"+tt.name)
-			os.MkdirAll(destDir, 0755)
+			require.NoError(t, os.MkdirAll(destDir, 0755))
 
 			err := archive.Extract(zipPath, destDir)
 
@@ -378,7 +386,7 @@ func TestExtract_EmptyArchive(t *testing.T) {
 	zipPath := createTestZip(t, map[string]string{})
 
 	destDir := filepath.Join(testDir, "empty-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
@@ -391,7 +399,7 @@ func TestExtract_DirectoryTraversal(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "nested-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
@@ -403,26 +411,30 @@ func TestExtract_DirectoryTraversal(t *testing.T) {
 func TestExtract_FilePermissions(t *testing.T) {
 	// 创建一个具有特定权限的文件
 	path := filepath.Join(testDir, "source", "executable.sh")
-	os.MkdirAll(filepath.Dir(path), 0755)
-	os.WriteFile(path, []byte("#!/bin/sh\necho test"), 0755)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\necho test"), 0755))
 
 	// 创建 ZIP 包含这个文件
 	zipPath := filepath.Join(testDir, "perms.zip")
-	f, _ := os.Create(zipPath)
+	f, err := os.Create(zipPath)
+	require.NoError(t, err)
 	w := zip.NewWriter(f)
 
-	info, _ := os.Stat(path)
-	writer, _ := w.Create("executable.sh")
-	writer.Write([]byte("#!/bin/sh\necho test"))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	writer, err := w.Create("executable.sh")
+	require.NoError(t, err)
+	_, err = writer.Write([]byte("#!/bin/sh\necho test"))
+	require.NoError(t, err)
 
 	// 注意：zip 库可能不完全保留权限，这里主要测试不报错
-	w.Close()
-	f.Close()
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
 
 	destDir := filepath.Join(testDir, "perms-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
-	err := archive.Extract(zipPath, destDir)
+	err = archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
 	assert.FileExists(t, filepath.Join(destDir, "executable.sh"))
 	_ = info // 避免未使用警告
@@ -437,7 +449,7 @@ func TestExtract_LargeFile(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "large-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
@@ -452,9 +464,9 @@ func TestExtract_LargeFile(t *testing.T) {
 func TestExtract_Overwrite(t *testing.T) {
 	// 先创建一个文件
 	destDir := filepath.Join(testDir, "overwrite-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 	existingFile := filepath.Join(destDir, "file.txt")
-	os.WriteFile(existingFile, []byte("old content"), 0644)
+	require.NoError(t, os.WriteFile(existingFile, []byte("old content"), 0644))
 
 	// 创建包含同名文件的 ZIP
 	zipPath := createTestZip(t, map[string]string{
@@ -465,7 +477,8 @@ func TestExtract_Overwrite(t *testing.T) {
 	require.NoError(t, err)
 
 	// 验证内容被覆盖
-	content, _ := os.ReadFile(existingFile)
+	content, err := os.ReadFile(existingFile)
+	require.NoError(t, err)
 	assert.Equal(t, "new content", string(content))
 }
 
@@ -479,7 +492,7 @@ func TestExtract_MixedContent(t *testing.T) {
 	})
 
 	destDir := filepath.Join(testDir, "mixed-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(zipPath, destDir)
 	require.NoError(t, err)
@@ -494,7 +507,7 @@ func TestExtract_MixedContent(t *testing.T) {
 // TestExtract_NonExistentArchive 测试不存在的文件
 func TestExtract_NonExistentArchive(t *testing.T) {
 	destDir := filepath.Join(testDir, "nonexist-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract("nonexistent.zip", destDir)
 	require.Error(t, err)
@@ -504,10 +517,10 @@ func TestExtract_NonExistentArchive(t *testing.T) {
 func TestExtract_CorruptedZip(t *testing.T) {
 	// 创建损坏的 ZIP 文件
 	corruptedPath := filepath.Join(testDir, "corrupted.zip")
-	os.WriteFile(corruptedPath, []byte("not a valid zip"), 0644)
+	require.NoError(t, os.WriteFile(corruptedPath, []byte("not a valid zip"), 0644))
 
 	destDir := filepath.Join(testDir, "corrupted-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
 	err := archive.Extract(corruptedPath, destDir)
 	require.Error(t, err)
@@ -517,13 +530,15 @@ func TestExtract_CorruptedZip(t *testing.T) {
 func TestExtract_TarWithSymlink(t *testing.T) {
 	// 创建一个 TAR 包含符号链接
 	path := filepath.Join(testDir, "symlink.tar")
-	f, _ := os.Create(path)
+	f, err := os.Create(path)
+	require.NoError(t, err)
 	tw := tar.NewWriter(f)
 
 	// 添加正常文件
 	header := &tar.Header{Name: "normal.txt", Mode: 0644, Size: 7}
-	tw.WriteHeader(header)
-	tw.Write([]byte("content"))
+	require.NoError(t, tw.WriteHeader(header))
+	_, err = tw.Write([]byte("content"))
+	require.NoError(t, err)
 
 	// 添加符号链接（Typeflag = '2'）
 	header = &tar.Header{
@@ -531,15 +546,15 @@ func TestExtract_TarWithSymlink(t *testing.T) {
 		Typeflag: tar.TypeSymlink,
 		Linkname: "/etc/passwd",
 	}
-	tw.WriteHeader(header)
+	require.NoError(t, tw.WriteHeader(header))
 
-	tw.Close()
-	f.Close()
+	require.NoError(t, tw.Close())
+	require.NoError(t, f.Close())
 
 	destDir := filepath.Join(testDir, "symlink-dest")
-	os.MkdirAll(destDir, 0755)
+	require.NoError(t, os.MkdirAll(destDir, 0755))
 
-	err := archive.Extract(path, destDir)
+	err = archive.Extract(path, destDir)
 	// 符号链接应该被跳过或导致错误
 	// 取决于实现，这里验证不崩溃
 	_ = err

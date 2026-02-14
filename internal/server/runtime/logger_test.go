@@ -21,12 +21,12 @@ var loggerTestDir string
 func TestMain(m *testing.M) {
 	cwd, _ := os.Getwd()
 	loggerTestDir = filepath.Join(cwd, "test-logger-logs")
-	os.RemoveAll(loggerTestDir)
-	os.MkdirAll(loggerTestDir, 0755)
+	_ = os.RemoveAll(loggerTestDir)
+	_ = os.MkdirAll(loggerTestDir, 0755)
 
 	code := m.Run()
 
-	os.RemoveAll(loggerTestDir)
+	_ = os.RemoveAll(loggerTestDir)
 	os.Exit(code)
 }
 
@@ -35,9 +35,14 @@ func setupTestDir(t *testing.T, prefix string) string {
 	dir, err := os.MkdirTemp("", prefix)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 	})
 	return dir
+}
+
+func stopLogger(t *testing.T, logger *runtime.Logger) {
+	t.Helper()
+	require.NoError(t, logger.Stop())
 }
 
 // TestLogger_Start_Stop 测试启动和停止
@@ -65,7 +70,7 @@ func TestLogger_Start_Stop(t *testing.T) {
 func TestLogger_WriteLog(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-write")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入不同类型的日志
 	logger.WriteLog("system", "system message")
@@ -87,7 +92,7 @@ func TestLogger_WriteLog(t *testing.T) {
 func TestLogger_MemoryLimit(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-limit")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入超过 1000 行
 	for i := 0; i < 1500; i++ {
@@ -106,7 +111,7 @@ func TestLogger_MemoryLimit(t *testing.T) {
 func TestLogger_GetLogs(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-get")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入 10 行
 	for i := 0; i < 10; i++ {
@@ -134,7 +139,7 @@ func TestLogger_GetLogs(t *testing.T) {
 func TestLogger_CaptureOutput(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-capture")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 模拟 stdout
 	stdout := bytes.NewBufferString("stdout line 1\nstdout line 2\n")
@@ -170,7 +175,7 @@ func TestLogger_CaptureOutput(t *testing.T) {
 func TestLogger_GetAllLogs(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-all")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入 5 行
 	for i := 0; i < 5; i++ {
@@ -199,7 +204,7 @@ func TestLogger_GetLogFile(t *testing.T) {
 	assert.Contains(t, logFile, "test-file")
 
 	// 停止后仍然返回路径
-	logger.Stop()
+	require.NoError(t, logger.Stop())
 	assert.NotEqual(t, "", logger.GetLogFile())
 }
 
@@ -207,7 +212,7 @@ func TestLogger_GetLogFile(t *testing.T) {
 func TestLogger_ConcurrentWrite(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-concurrent")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 并发写入
 	var wg sync.WaitGroup
@@ -242,7 +247,7 @@ func TestLogger_Stop_ClosesDoneChannel(t *testing.T) {
 	}()
 
 	// 停止
-	logger.Stop()
+	require.NoError(t, logger.Stop())
 
 	// 等待捕获 goroutine 退出
 	select {
@@ -257,7 +262,7 @@ func TestLogger_Stop_ClosesDoneChannel(t *testing.T) {
 func TestLogger_WriteLog_FileSync(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-sync")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logger.WriteLog("system", "test message")
 
@@ -294,7 +299,7 @@ func TestLogger_SanitizeFilename(t *testing.T) {
 			// 通过 NewLogger 间接测试 sanitizeFilename
 			logger := runtime.NewLogger(loggerTestDir, tt.input)
 			require.NoError(t, logger.Start())
-			defer logger.Stop()
+			defer stopLogger(t, logger)
 
 			logFile := logger.GetLogFile()
 			// 验证文件名包含预期结果
@@ -309,7 +314,7 @@ func TestLogger_SanitizeFilename(t *testing.T) {
 func TestLogger_EmptyMessage(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-empty")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logger.WriteLog("stdout", "")
 	logger.WriteLog("stderr", "")
@@ -323,7 +328,7 @@ func TestLogger_EmptyMessage(t *testing.T) {
 func TestLogger_Timestamp(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-time")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	before := time.Now()
 	// Add small delay to ensure time difference from before
@@ -358,7 +363,7 @@ func TestLogger_Stop_MultipleTimes(t *testing.T) {
 func TestLogger_WriteAfterStop(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-after")
 	require.NoError(t, logger.Start())
-	logger.Stop()
+	require.NoError(t, logger.Stop())
 
 	// 停止后写入应该不会 panic
 	logger.WriteLog("stdout", "after stop")
@@ -433,7 +438,7 @@ func TestLogger_CaptureOutput_Stopped(t *testing.T) {
 	require.NoError(t, logger.Start())
 
 	// 先停止
-	logger.Stop()
+	require.NoError(t, logger.Stop())
 
 	// 尝试捕获（应该立即返回，不会panic）
 	reader := strings.NewReader("test\n")
@@ -469,7 +474,7 @@ func TestLogger_WriteLog_NoFile(t *testing.T) {
 func TestLogger_GetLogs_NegativeLines(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-negative")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logger.WriteLog("stdout", "line 1")
 	logger.WriteLog("stdout", "line 2")
@@ -483,7 +488,7 @@ func TestLogger_GetLogs_NegativeLines(t *testing.T) {
 func TestLogger_GetLogs_LargerThanTotal(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-larger")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logger.WriteLog("stdout", "line 1")
 	logger.WriteLog("stdout", "line 2")
@@ -501,7 +506,7 @@ func TestLogger_GetLogFile_AfterStop(t *testing.T) {
 	beforeStop := logger.GetLogFile()
 	assert.NotEqual(t, "", beforeStop)
 
-	logger.Stop()
+	require.NoError(t, logger.Stop())
 
 	// 停止后仍然返回路径
 	afterStop := logger.GetLogFile()
@@ -512,7 +517,7 @@ func TestLogger_GetLogFile_AfterStop(t *testing.T) {
 func TestLogger_WriteLog_FileSync_Error(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "test-sync-error")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 正常写入应该成功
 	logger.WriteLog("stdout", "test")
@@ -526,7 +531,7 @@ func TestLogger_WriteLog_FileSync_Error(t *testing.T) {
 func TestLogger_SanitizeFilename_EmptyAfterTrim(t *testing.T) {
 	logger := runtime.NewLogger(loggerTestDir, "___")
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logFile := logger.GetLogFile()
 	// 应该包含"unknown"作为fallback
@@ -538,7 +543,7 @@ func TestLogger_SanitizeFilename_VeryLong(t *testing.T) {
 	longName := strings.Repeat("a", 200)
 	logger := runtime.NewLogger(loggerTestDir, longName)
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	logFile := logger.GetLogFile()
 	// 应用名部分应该被截断到100字符，总文件名会更长（包含-timestamp.log）
@@ -573,7 +578,7 @@ func TestLogger_Concurrent_StopAndWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(1 * time.Millisecond) // 稍微延迟
-		logger.Stop()
+		_ = logger.Stop()
 	}()
 
 	wg.Wait()
@@ -591,7 +596,7 @@ func TestLogger_Stop_MultipleTimes_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			logger.Stop()
+			_ = logger.Stop()
 		}()
 	}
 	wg.Wait()
@@ -611,7 +616,7 @@ func TestLogger_Rotation_Basic(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入足够多的日志以触发轮转
 	for i := 0; i < 50; i++ {
@@ -644,7 +649,7 @@ func TestLogger_Rotation_Disabled(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入大量日志
 	for i := 0; i < 100; i++ {
@@ -676,7 +681,7 @@ func TestLogger_Rotation_MaxFiles(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入大量日志，触发多次轮转
 	for i := 0; i < 200; i++ {
@@ -695,7 +700,7 @@ func TestLogger_Rotation_Configuration(t *testing.T) {
 
 	// 通过写入日志并检查行为来验证默认配置
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入少量日志，不应该触发轮转（默认10MB限制）
 	for i := 0; i < 10; i++ {
@@ -751,7 +756,7 @@ func TestLogger_Rotation_FileSize(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入日志直到超过限制
 	for i := 0; i < 100; i++ {
@@ -785,7 +790,7 @@ func TestLogger_Rotation_Concurrent(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 并发写入
 	var wg sync.WaitGroup
@@ -823,7 +828,7 @@ func TestLogger_Rotation_GetLogFile_AfterRotation(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 获取初始路径
 	initialPath := logger.GetLogFile()
@@ -855,7 +860,7 @@ func TestLogger_Rotation_EmptyDir(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入触发轮转
 	for i := 0; i < 30; i++ {
@@ -879,7 +884,7 @@ func TestLogger_Rotation_InvalidConfig(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 应该正常工作，只是不轮转
 	for i := 0; i < 10; i++ {
@@ -901,7 +906,7 @@ func TestLogger_Rotation_MultipleRotations(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入足够触发多次轮转
 	for i := 0; i < 300; i++ {
@@ -932,7 +937,7 @@ func TestLogger_Rotation_Cleanup(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 触发多次轮转
 	for i := 0; i < 200; i++ {
@@ -957,7 +962,7 @@ func TestLogger_Rotation_DisableDuringRuntime(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入一些日志
 	for i := 0; i < 10; i++ {
@@ -1001,7 +1006,7 @@ func TestLogger_Rotation_GetCurrentFileSize(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入一些日志
 	for i := 0; i < 5; i++ {
@@ -1029,7 +1034,7 @@ func TestLogger_Rotation_EmptyMessage(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入空消息
 	for i := 0; i < 50; i++ {
@@ -1055,7 +1060,7 @@ func TestLogger_Rotation_SpecialCharacters(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 触发轮转
 	for i := 0; i < 50; i++ {
@@ -1089,7 +1094,7 @@ func TestLogger_Rotation_LargeFile(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入大量数据
 	for i := 0; i < 200; i++ {
@@ -1120,7 +1125,7 @@ func TestLogger_Rotation_SequentialWrites(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 连续写入，每次写入后检查
 	for batch := 0; batch < 5; batch++ {
@@ -1148,7 +1153,7 @@ func TestLogger_Rotation_ConcurrentConfigChange(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	var wg sync.WaitGroup
 
@@ -1190,7 +1195,7 @@ func TestLogger_Rotation_ZeroMaxFiles(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 触发多次轮转
 	for i := 0; i < 200; i++ {
@@ -1221,7 +1226,7 @@ func TestLogger_Rotation_ZeroMaxSize(t *testing.T) {
 	})
 
 	require.NoError(t, logger.Start())
-	defer logger.Stop()
+	defer stopLogger(t, logger)
 
 	// 写入大量日志
 	for i := 0; i < 100; i++ {

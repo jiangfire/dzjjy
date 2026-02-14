@@ -14,7 +14,7 @@ func TestStateStore_PersistAndLoad(t *testing.T) {
 	// 创建临时目录
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -71,7 +71,7 @@ func TestStateStore_PersistAndLoad(t *testing.T) {
 func TestStateStore_ChecksumValidation(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -87,12 +87,12 @@ func TestStateStore_ChecksumValidation(t *testing.T) {
 	// 读取文件并手动损坏校验和
 	jsonData, _ := os.ReadFile(stateFile)
 	var stateFileObj StateFile
-	json.Unmarshal(jsonData, &stateFileObj)
+	require.NoError(t, json.Unmarshal(jsonData, &stateFileObj))
 
 	// 损坏校验和
 	stateFileObj.Checksum = "invalid_checksum"
 	corruptedData, _ := json.MarshalIndent(stateFileObj, "", "  ")
-	os.WriteFile(stateFile, corruptedData, 0644)
+	require.NoError(t, os.WriteFile(stateFile, corruptedData, 0644))
 
 	// 尝试加载 - 应该尝试从备份恢复
 	_, err = store.Load()
@@ -104,7 +104,7 @@ func TestStateStore_ChecksumValidation(t *testing.T) {
 func TestStateStore_Backup(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -129,15 +129,15 @@ func TestStateStore_Backup(t *testing.T) {
 func TestStateStore_Clear(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
 
 	// 创建状态和备份
 	data := &StateData{Apps: map[string]*AppState{"app1": {PID: 100}}}
-	store.Persist(data)
-	store.Backup()
+	require.NoError(t, store.Persist(data))
+	require.NoError(t, store.Backup())
 
 	// 清除
 	err = store.Clear()
@@ -155,7 +155,7 @@ func TestStateStore_Clear(t *testing.T) {
 func TestSyncManager_OnAppEvent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -196,7 +196,7 @@ func TestSyncManager_OnAppEvent(t *testing.T) {
 func TestRestoreManager_Restore(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -233,7 +233,7 @@ func TestRestoreManager_Restore(t *testing.T) {
 func TestRestoreManager_Cleanup(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)
@@ -299,7 +299,7 @@ func TestRestoreManager_Cleanup(t *testing.T) {
 func TestStateStore_AtomictWrite(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "state-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "state.json")
 	store := NewStateStore(stateFile)

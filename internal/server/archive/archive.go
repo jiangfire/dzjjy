@@ -74,7 +74,7 @@ func extractZip(archivePath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open zip: %w", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	var invalidPaths []string
 	successCount := 0
@@ -125,14 +125,14 @@ func extractZipFile(f *zip.File, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer destFile.Close()
+	defer func() { _ = destFile.Close() }()
 
 	// 打开源文件
 	srcFile, err := f.Open()
 	if err != nil {
 		return fmt.Errorf("failed to open zip file: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	// 复制内容（限制大小防止解压炸弹）
 	limitedReader := io.LimitReader(srcFile, 100*1024*1024)     // 100MB limit
@@ -149,13 +149,13 @@ func extractTarGz(archivePath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open tar.gz: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	return extractTarReader(tar.NewReader(gzr), destDir)
 }
@@ -166,7 +166,7 @@ func extractTar(archivePath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open tar: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return extractTarReader(tar.NewReader(file), destDir)
 }
@@ -254,13 +254,13 @@ func extractGzip(archivePath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open gzip: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	// 目标文件名（去掉 .gz 扩展名）
 	entryPath := strings.TrimSuffix(filepath.Base(archivePath), ".gz")
@@ -275,7 +275,7 @@ func extractGzip(archivePath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer destFile.Close()
+	defer func() { _ = destFile.Close() }()
 
 	// 复制内容（限制大小防止解压炸弹）
 	limitedReader := io.LimitReader(gzr, 100*1024*1024)         // 100MB limit
