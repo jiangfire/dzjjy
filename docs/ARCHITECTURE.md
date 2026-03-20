@@ -36,7 +36,7 @@ internal/
 | **Archive** | ZIP/TAR/GZ 支持、路径遍历防护、大小限制（100MB）、格式自动检测 |
 | **Auth** | Bearer Token 认证、时序攻击防护、所有端点（除 /health）需认证 |
 | **State** | 原子写入、SHA256 校验、自动备份、事件驱动同步（100ms 延迟） |
-| **Handler** | 部署流程自动化、文件上传验证、多应用支持（通过查询参数） |
+| **Handler** | 部署流程自动化、文件上传验证、多应用支持（通过路径参数） |
 
 ## 状态持久化
 
@@ -53,7 +53,7 @@ runtime.Manager → EventNotifier → SyncManager → StateStore → state.json
 |------|------|
 | **原子写入** | 临时文件 + 重命名，防止写入中断损坏 |
 | **校验和** | SHA256 验证数据完整性，损坏时自动从备份恢复 |
-| **自动备份** | 每次写入前创建 `state.json.backup.YYYYMMDD-HHMMSS` |
+| **自动备份** | 覆盖主状态文件前创建 `state.json.backup.YYYYMMDD-HHMMSS` |
 | **事件驱动** | 100ms 延迟批量写入，减少 IO 开销 |
 | **进程恢复** | Windows: `tasklist` 检查行数 > 1；Unix: `syscall.Signal(0)` |
 | **状态清理** | 自动移除无效 PID，重置状态 |
@@ -64,7 +64,8 @@ runtime.Manager → EventNotifier → SyncManager → StateStore → state.json
 2. **恢复应用状态** → 检查 PID → 标记运行中/待重启/已停止
 3. **清理无效状态** → 移除不存在的 PID
 4. **同步到内存** → 通过事件更新 SyncManager
-5. **自动重启** → 对标记为 `AutoRestart` 的已停止应用执行重启
+5. **恢复运行态** → 已恢复的应用重新出现在 `status/list/remove` 能力中
+6. **自动重启** → 对标记为 `AutoRestart` 的已停止应用执行重启
 
 ### 线程安全
 - `StateStore`: `sync.RWMutex` 保护文件操作
@@ -156,6 +157,7 @@ func isValidExecutable(path string) bool {
 | **多应用** | MultiManager 支持同时管理多个应用 |
 | **开发环境** | 不适合生产使用 |
 | **工作目录** | 每次部署清空（按应用隔离） |
+| **上传目录** | 保留每个应用最近一次上传的原始文件，与工作目录分离 |
 | **日志保留** | 内存 1000 行，文件支持轮转 |
 | **重启延迟** | 固定 1 秒，防止快速失败循环 |
 | **提取方式** | 文件直接解压到应用工作目录根部 |

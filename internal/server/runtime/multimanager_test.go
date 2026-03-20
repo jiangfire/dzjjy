@@ -209,8 +209,9 @@ func TestMultiManager_StopApp(t *testing.T) {
 	}
 
 	// 验证已停止
-	_, exists := mm.GetApp("test-app")
-	assert.False(t, exists)
+	manager, exists := mm.GetApp("test-app")
+	require.True(t, exists)
+	assert.False(t, manager.IsRunning())
 
 	// 停止不存在的应用应返回错误
 	err = mm.StopApp("non-existent")
@@ -328,6 +329,33 @@ func TestMultiManager_RemoveApp(t *testing.T) {
 	// 移除不存在的应用应返回错误
 	err = mm.RemoveApp("non-existent")
 	assert.Error(t, err)
+}
+
+func TestMultiManager_RestoreStoppedApp(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "multimanager-test-*")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logDir := filepath.Join(tmpDir, "logs")
+	require.NoError(t, os.MkdirAll(logDir, 0755))
+
+	mm := NewMultiManager(logDir)
+	config := &ProcessConfig{
+		Type:        TypeExec,
+		WorkDir:     tmpDir,
+		Executable:  "demo.exe",
+		AutoRestart: true,
+		MaxRestarts: 3,
+	}
+
+	err = mm.RestoreApp("test-app", config, 0, 1704067200, 2, false, "")
+	require.NoError(t, err)
+
+	info, exists := mm.GetAppInfo("test-app")
+	require.True(t, exists)
+	assert.False(t, info.Running)
+	assert.Equal(t, "demo.exe", info.Executable)
+	assert.Equal(t, 2, info.RestartCount)
 }
 
 func TestMultiManager_StopAll(t *testing.T) {

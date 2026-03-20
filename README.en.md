@@ -42,8 +42,8 @@ Goals:
 - Multi-app management by app name.
 - Flexible deployment: single file or archives (`.zip`, `.tar`, `.tar.gz`, `.gz`).
 - Process guard: `auto-restart` with max restart limits.
-- Log query with `lines` parameter.
-- Optional state persistence via `-state`.
+- Log query with `lines`; the client also supports `--follow`.
+- Optional state persistence via `-state`, with metadata restoration and configured auto-restart.
 - Basic security controls: Bearer token auth, path/input validation.
 
 ## Quick Start
@@ -80,7 +80,7 @@ Arguments:
 
 - `-token`: auth token (required)
 - `-port`: server port (default `8080`)
-- `-upload`: upload dir (default `./uploads`)
+- `-upload`: upload staging dir (default `./uploads`, keeps the latest uploaded artifact per app)
 - `-work`: app work dir (default `./workspace`)
 - `-log`: log dir (default `./logs`)
 - `-state`: state file (optional, recommended)
@@ -180,6 +180,10 @@ Multi-app endpoints:
 | GET | `/api/v1/apps/{name}/status` | App status |
 | GET | `/api/v1/apps/{name}/logs?lines=N` | App logs |
 | DELETE | `/api/v1/apps/{name}/remove` | Remove app |
+
+Compatible delete path:
+
+- `DELETE /api/v1/apps/{name}`
 
 Legacy single-app endpoints (`default`):
 

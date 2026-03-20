@@ -90,12 +90,25 @@ func (h *Handler) RestoreState() error {
 		slog.Warn("cleanup failed", "error", err)
 	}
 
-	// 3. 获取需要自动重启的应用列表
-	// 从 syncManager 获取状态，找出需要重启的应用
+	// 3. 从 syncManager 获取状态，先恢复到内存管理器，再决定是否自动重启
 	stateData := h.syncManager.GetState()
 	ctx := context.Background()
 
 	for appName, appState := range stateData.Apps {
+		if appState.Config != nil {
+			if err := h.multiManager.RestoreApp(
+				appName,
+				(*runtime.ProcessConfig)(appState.Config),
+				appState.PID,
+				appState.StartTime,
+				appState.RestartCount,
+				appState.Status == state.StatusRunning,
+				appState.LogPath,
+			); err != nil {
+				slog.Error("failed to restore app into runtime manager", "app", appName, "error", err)
+			}
+		}
+
 		// 只处理已停止但需要自动重启的应用
 		if appState.Status == state.StatusStopped &&
 			appState.Config != nil &&
@@ -284,18 +297,26 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 		return err
 	}
 
+	appUploadDir := filepath.Join(h.uploadDir, appName)
+	if err := os.RemoveAll(appUploadDir); err != nil { // #nosec G703 - appName is validated by validateAppName
+		return fmt.Errorf("failed to clean upload dir: %v", err)
+	}
+	if err := os.MkdirAll(appUploadDir, 0750); err != nil { // #nosec G703 - appName is validated by validateAppName
+		return fmt.Errorf("failed to create upload dir: %v", err)
+	}
+
 	appWorkDir := filepath.Join(h.workDir, appName)
-	destPath := filepath.Join(appWorkDir, header.Filename)
+	stagedPath := filepath.Join(appUploadDir, header.Filename)
 
 	// 验证路径安全（防止目录遍历）
-	absWorkDir, _ := filepath.Abs(appWorkDir)
-	absDestPath, _ := filepath.Abs(destPath)
-	if !strings.HasPrefix(absDestPath, absWorkDir+string(os.PathSeparator)) {
+	absUploadDir, _ := filepath.Abs(appUploadDir)
+	absStagedPath, _ := filepath.Abs(stagedPath)
+	if !strings.HasPrefix(absStagedPath, absUploadDir+string(os.PathSeparator)) {
 		return fmt.Errorf("invalid file path: %s (path traversal detected)", header.Filename)
 	}
 
 	// 保存文件
-	dest, err := os.Create(destPath) // #nosec G304,G703 - path validated above
+	dest, err := os.Create(stagedPath) // #nosec G304,G703 - path validated above
 	if err != nil {
 		return fmt.Errorf("failed to create file: %v", err)
 	}
@@ -308,18 +329,6 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 		return fmt.Errorf("failed to close file: %v", err)
 	}
 
-	// 设置文件权限（二进制文件需要执行权限）
-	// 简单策略：如果文件没有扩展名，或者扩展名为 .exe/.bin，设置可执行权限
-	// 这样可以覆盖测试场景（app1, app2）和 Windows 场景（app1.exe）
-	execExt := filepath.Ext(header.Filename)
-	noExt := execExt == ""
-	isExecExt := execExt == ".exe" || execExt == ".bin"
-	if noExt || isExecExt {
-		if err := os.Chmod(destPath, 0755); err != nil { // #nosec G302,G703 - executable artifact requires execute bit and path is validated
-			slog.Warn("failed to set executable permissions", "error", err)
-		}
-	}
-
 	// 处理压缩文件
 	if archive.IsArchive(header.Filename) {
 		// #nosec G706 - app/file names are operational diagnostics
@@ -329,7 +338,7 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 			"dest", appWorkDir,
 		)
 
-		if err := archive.Extract(destPath, appWorkDir); err != nil {
+		if err := archive.Extract(stagedPath, appWorkDir); err != nil {
 			// #nosec G706 - app/file names are operational diagnostics
 			slog.Error("failed to extract archive", "error", err, "file", header.Filename)
 			if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
@@ -341,16 +350,70 @@ func (h *Handler) handleFileUpload(r *http.Request, appName string) error {
 			return fmt.Errorf("failed to extract archive: %v", err)
 		}
 
-		if err := os.Remove(destPath); err != nil { // #nosec G703 - path validated above
-			slog.Error("failed to remove archive file", "error", err)
-			return fmt.Errorf("failed to remove archive file: %v", err)
-		}
-
 		// #nosec G706 - app/file names are operational diagnostics
 		slog.Info("archive extracted successfully", "app", appName, "file", header.Filename)
+		return nil
+	}
+
+	workPath := filepath.Join(appWorkDir, header.Filename)
+	absWorkPath, _ := filepath.Abs(workPath)
+	if absWorkPath != absStagedPath {
+		if err := copyFileBetweenRoots(appUploadDir, stagedPath, appWorkDir, workPath); err != nil {
+			return fmt.Errorf("failed to copy uploaded file to work dir: %v", err)
+		}
+	}
+
+	// 简单策略：如果文件没有扩展名，或者扩展名为 .exe/.bin，设置可执行权限
+	execExt := filepath.Ext(header.Filename)
+	noExt := execExt == ""
+	isExecExt := execExt == ".exe" || execExt == ".bin"
+	if noExt || isExecExt {
+		if err := os.Chmod(workPath, 0755); err != nil { // #nosec G302,G703 - executable artifact requires execute bit and path is validated
+			slog.Warn("failed to set executable permissions", "error", err)
+		}
 	}
 
 	return nil
+}
+
+func copyFileBetweenRoots(srcRootDir, srcPath, dstRootDir, dstPath string) error {
+	srcRelPath, err := filepath.Rel(srcRootDir, srcPath)
+	if err != nil {
+		return err
+	}
+	dstRelPath, err := filepath.Rel(dstRootDir, dstPath)
+	if err != nil {
+		return err
+	}
+
+	srcRoot, err := os.OpenRoot(srcRootDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = srcRoot.Close() }()
+
+	dstRoot, err := os.OpenRoot(dstRootDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dstRoot.Close() }()
+
+	src, err := srcRoot.Open(srcRelPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+
+	dst, err := dstRoot.Create(dstRelPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dst.Close() }()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return dst.Close()
 }
 
 // validateFilename 验证文件名
@@ -658,16 +721,25 @@ func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 	// 停止应用
 	if err := h.multiManager.StopApp(appName); err != nil {
 		// 如果应用不存在，也返回成功（幂等性）
-		if !strings.Contains(err.Error(), "not found") {
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no running application") {
 			h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	if err := h.multiManager.RemoveApp(appName); err != nil && !strings.Contains(err.Error(), "not found") {
+		h.sendError(w, fmt.Sprintf("failed to remove runtime state: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	// 清理工作目录
 	appWorkDir := filepath.Join(h.workDir, appName)
 	if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
 		slog.Warn("failed to remove work dir", "error", err)
+	}
+	appUploadDir := filepath.Join(h.uploadDir, appName)
+	if err := os.RemoveAll(appUploadDir); err != nil { // #nosec G703 - appName is validated by validateAppName
+		slog.Warn("failed to remove upload dir", "error", err)
 	}
 
 	// 从状态管理器移除

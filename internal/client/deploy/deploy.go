@@ -44,9 +44,18 @@ func (c *Client) doRequest(method, url string, body io.Reader) (*api.Response, e
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
 	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		message := string(bytes.TrimSpace(responseBody))
+		if message == "" {
+			message = resp.Status
+		}
+		return nil, fmt.Errorf("request failed: %s", message)
 	}
 
 	if !result.Success {
@@ -275,28 +284,7 @@ func (c *Client) Start(appName, appType, executable, entry, args string, autoRes
 
 // Remove 删除应用（支持多应用）
 func (c *Client) Remove(appName string) error {
-	url := c.serverURL + "/api/v1/apps/" + appName
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.client.Do(req) // #nosec G704 - serverURL is an explicit client configuration target
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result api.Response
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if !result.Success {
-		return fmt.Errorf("remove failed: %s", result.Message)
-	}
-
-	return nil
+	url := c.serverURL + "/api/v1/apps/" + appName + "/remove"
+	_, err := c.doRequest("DELETE", url, nil)
+	return err
 }

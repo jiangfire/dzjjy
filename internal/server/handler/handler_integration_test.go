@@ -156,8 +156,31 @@ func main() {
 	err = h2.RestoreState()
 	require.NoError(t, err, "restore should succeed")
 
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/apps/app1/status":
+			h2.Status(w, r)
+		case "/api/v1/apps/app2/status":
+			h2.Status(w, r)
+		case "/api/v1/apps":
+			h2.ListApps(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server2.Close()
+
 	// 等待一下
 	time.Sleep(300 * time.Millisecond)
+
+	restoredStatus1 := getStatus(t, server2.URL, "app1")
+	assert.True(t, restoredStatus1.Running, "app1 should be auto-restarted after restore")
+
+	restoredStatus2 := getStatus(t, server2.URL, "app2")
+	assert.True(t, restoredStatus2.Running, "app2 should be auto-restarted after restore")
+
+	restoredApps := listApps(t, server2.URL)
+	assert.Len(t, restoredApps, 2)
 
 	// 验证状态文件仍然存在且包含两个应用
 	stateData2 := h2.GetStateSnapshot()
@@ -209,7 +232,7 @@ func main() {
 }
 `)
 
-	deployApp(t, server.URL, "test", appPath, "exec", "test"+execSuffix, "", "", true, 3)
+	deployApp(t, server.URL, "test", appPath, "exec", "test"+execSuffix, "", "", false, 3)
 
 	// 验证应用运行
 	status := getStatus(t, server.URL, "test")
@@ -243,6 +266,93 @@ func main() {
 	testApp := apps["test"].(map[string]interface{})
 	assert.Equal(t, "stopped", testApp["status"])
 	assert.Equal(t, float64(0), testApp["pid"])
+
+	h2 := handler.NewHandlerWithState(workDir, workDir, logDir, stateFile)
+	require.NoError(t, h2.RestoreState())
+
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/apps/test/status":
+			h2.Status(w, r)
+		case "/api/v1/apps":
+			h2.ListApps(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server2.Close()
+
+	restoredStatus := getStatus(t, server2.URL, "test")
+	assert.False(t, restoredStatus.Running)
+
+	restoredApps := listApps(t, server2.URL)
+	assert.Contains(t, restoredApps, "test")
+}
+
+func TestRemoveApp_CleansRuntimeAndFiles(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "remove-app-test-*")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	uploadDir := filepath.Join(tmpDir, "uploads")
+	workDir := filepath.Join(tmpDir, "workspace")
+	logDir := filepath.Join(tmpDir, "logs")
+	require.NoError(t, os.MkdirAll(uploadDir, 0755))
+	require.NoError(t, os.MkdirAll(workDir, 0755))
+	require.NoError(t, os.MkdirAll(logDir, 0755))
+
+	h := handler.NewHandler(uploadDir, workDir, logDir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/apps/test/deploy":
+			h.Deploy(w, r)
+		case "/api/v1/apps/test/status":
+			h.Status(w, r)
+		case "/api/v1/apps/test/remove":
+			h.RemoveApp(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	execSuffix := ""
+	if os.PathSeparator == '\\' {
+		execSuffix = ".exe"
+	}
+
+	appPath := createTestApp(t, tmpDir, "test", `package main
+import "time"
+func main() {
+	time.Sleep(5 * time.Second)
+}
+`)
+
+	deployApp(t, server.URL, "test", appPath, "exec", "test"+execSuffix, "", "", true, 3)
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/apps/test/remove", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	var result api.Response
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	assert.True(t, result.Success)
+
+	statusReq, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/apps/test/status", nil)
+	require.NoError(t, err)
+	statusResp, err := http.DefaultClient.Do(statusReq)
+	require.NoError(t, err)
+	defer func() { _ = statusResp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, statusResp.StatusCode)
+
+	_, err = os.Stat(filepath.Join(workDir, "test"))
+	assert.True(t, os.IsNotExist(err))
+
+	_, err = os.Stat(filepath.Join(uploadDir, "test"))
+	assert.True(t, os.IsNotExist(err))
 }
 
 // Helper functions

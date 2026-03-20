@@ -129,8 +129,14 @@ func createMultiAppHandler(h *handler.Handler) http.HandlerFunc {
 
 		appName := parts[0]
 
-		// 如果只有应用名，查询状态
+		// 如果只有应用名，根据方法决定行为
 		if len(parts) == 1 {
+			if r.Method == http.MethodDelete {
+				r.URL.Path = "/api/v1/apps/" + appName + "/remove"
+				h.RemoveApp(w, r)
+				return
+			}
+
 			// 临时修改路径供 handler 使用
 			r.URL.Path = "/api/v1/apps/" + appName + "/status"
 			h.Status(w, r)

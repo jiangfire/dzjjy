@@ -117,6 +117,10 @@ func (s *StateStore) Persist(data *StateData) error {
 	}
 	defer s.releaseLock()
 
+	if err := s.backupLocked(); err != nil {
+		return fmt.Errorf("failed to backup state: %w", err)
+	}
+
 	// 构建状态文件
 	stateFile := StateFile{
 		Version:   StateFileVersion,
@@ -195,6 +199,11 @@ func (s *StateStore) Load() (*StateFile, error) {
 func (s *StateStore) Backup() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	return s.backupLocked()
+}
+
+func (s *StateStore) backupLocked() error {
 
 	if _, err := os.Stat(s.stateFile); os.IsNotExist(err) {
 		return nil // 无文件可备份

@@ -46,9 +46,16 @@ func TestStateStore_PersistAndLoad(t *testing.T) {
 	err = store.Persist(data)
 	require.NoError(t, err)
 
+	// 第二次持久化应创建备份
+	err = store.Persist(data)
+	require.NoError(t, err)
+
 	// 验证文件存在
 	_, err = os.Stat(stateFile)
 	require.NoError(t, err)
+
+	matches, _ := filepath.Glob(stateFile + ".backup.*")
+	assert.GreaterOrEqual(t, len(matches), 1)
 
 	// 加载
 	loaded, err := store.Load()
@@ -228,6 +235,43 @@ func TestRestoreManager_Restore(t *testing.T) {
 	app := state.Apps["stopped-app"]
 	require.NotNil(t, app)
 	assert.Equal(t, StatusStopped, app.Status)
+	assert.Equal(t, 0, app.RestartCount)
+}
+
+func TestRestoreManager_RestorePreservesMetadata(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "state-test-*")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store := NewStateStore(stateFile)
+	syncManager := NewSyncManager(store)
+	restoreManager := NewRestoreManager(store, syncManager)
+	defer syncManager.Close()
+
+	data := &StateData{
+		Apps: map[string]*AppState{
+			"app1": {
+				Config: &ProcessConfig{
+					Type:       "exec",
+					Executable: "./app",
+				},
+				PID:          0,
+				StartTime:    1704067200,
+				RestartCount: 7,
+				Status:       StatusStopped,
+			},
+		},
+	}
+	require.NoError(t, store.Persist(data))
+
+	require.NoError(t, restoreManager.Restore())
+
+	state := syncManager.GetState()
+	app := state.Apps["app1"]
+	require.NotNil(t, app)
+	assert.Equal(t, int64(1704067200), app.StartTime)
+	assert.Equal(t, 7, app.RestartCount)
 }
 
 func TestRestoreManager_Cleanup(t *testing.T) {

@@ -183,6 +183,36 @@ func (mm *MultiManager) RemoveApp(appName string) error {
 	return nil
 }
 
+// RestoreApp 将持久化的应用状态恢复到内存管理器中。
+func (mm *MultiManager) RestoreApp(appName string, config *ProcessConfig, pid int, startTime int64, restartCount int, running bool, logPath string) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	if appName == "" {
+		return fmt.Errorf("app name cannot be empty")
+	}
+
+	manager := NewManager(config, mm.logDir, appName)
+	if mm.stateNotifier != nil {
+		adapter := &EventAdapter{
+			AppName: appName,
+			Notifier: &stateEventAdapter{
+				appName:       appName,
+				config:        config,
+				stateNotifier: mm.stateNotifier,
+			},
+		}
+		manager.SetEventAdapter(adapter)
+	}
+
+	if err := manager.Restore(config, pid, startTime, restartCount, running, logPath); err != nil {
+		return fmt.Errorf("failed to restore app '%s': %w", appName, err)
+	}
+
+	mm.managers[appName] = manager
+	return nil
+}
+
 // StopAll 停止所有应用（用于优雅关闭）
 func (mm *MultiManager) StopAll() error {
 	mm.mu.Lock()

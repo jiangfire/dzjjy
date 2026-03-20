@@ -322,6 +322,10 @@ func (l *Logger) GetLogs(lines int) []LogEntry {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
+	if len(l.logs) == 0 && l.logPath != "" {
+		return readLogsFromFile(l.logDir, l.logPath, lines)
+	}
+
 	if lines <= 0 || lines > len(l.logs) {
 		lines = len(l.logs)
 	}
@@ -330,6 +334,39 @@ func (l *Logger) GetLogs(lines int) []LogEntry {
 	result := make([]LogEntry, lines)
 	copy(result, l.logs[start:])
 
+	return result
+}
+
+func readLogsFromFile(logDir, logPath string, lines int) []LogEntry {
+	root, err := os.OpenRoot(logDir)
+	if err != nil {
+		return []LogEntry{}
+	}
+	defer func() { _ = root.Close() }()
+
+	relPath, err := filepath.Rel(logDir, logPath)
+	if err != nil {
+		return []LogEntry{}
+	}
+
+	content, err := root.ReadFile(relPath)
+	if err != nil || len(content) == 0 {
+		return []LogEntry{}
+	}
+
+	rawLines := strings.Split(strings.TrimRight(string(content), "\r\n"), "\n")
+	if lines <= 0 || lines > len(rawLines) {
+		lines = len(rawLines)
+	}
+
+	start := len(rawLines) - lines
+	result := make([]LogEntry, 0, lines)
+	for _, line := range rawLines[start:] {
+		result = append(result, LogEntry{
+			Type:    "system",
+			Message: line,
+		})
+	}
 	return result
 }
 
@@ -367,4 +404,11 @@ func (l *Logger) GetLogFile() string {
 	defer l.mu.RUnlock()
 
 	return l.logPath
+}
+
+// SetLogPath 为恢复态注入已有日志路径，不打开文件。
+func (l *Logger) SetLogPath(logPath string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logPath = logPath
 }

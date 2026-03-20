@@ -113,6 +113,7 @@ func (sm *SyncManager) updateAppState(event AppEvent) {
 func (sm *SyncManager) syncLoop() {
 	// 延迟持久化定时器（100ms延迟，批量写入）
 	var persistTimer *time.Timer
+	var timerC <-chan time.Time
 	var pendingEvents []AppEvent
 
 	for {
@@ -123,34 +124,27 @@ func (sm *SyncManager) syncLoop() {
 
 			// 启动延迟计时器（如果未启动）
 			if persistTimer == nil {
-				persistTimer = time.AfterFunc(100*time.Millisecond, func() {
-					sm.persistChan <- AppEvent{Type: "flush"} // 触发持久化
-				})
+				persistTimer = time.NewTimer(100 * time.Millisecond)
+				timerC = persistTimer.C
 			}
 
-		case event := <-sm.persistChan:
-			if event.Type == "flush" {
-				// 执行持久化
-				if len(pendingEvents) > 0 {
-					sm.mu.RLock()
-					stateCopy := sm.copyState()
-					sm.mu.RUnlock()
+		case <-timerC:
+			if len(pendingEvents) > 0 {
+				sm.mu.RLock()
+				stateCopy := sm.copyState()
+				sm.mu.RUnlock()
 
-					if err := sm.store.Persist(stateCopy); err != nil {
-						sm.log.Error("failed to persist state", "error", err)
-					} else {
-						sm.log.Debug("state persisted", "events", len(pendingEvents))
-					}
-
-					pendingEvents = nil
+				if err := sm.store.Persist(stateCopy); err != nil {
+					sm.log.Error("failed to persist state", "error", err)
+				} else {
+					sm.log.Debug("state persisted", "events", len(pendingEvents))
 				}
 
-				// 重置计时器
-				if persistTimer != nil {
-					persistTimer.Stop()
-					persistTimer = nil
-				}
+				pendingEvents = nil
 			}
+
+			persistTimer = nil
+			timerC = nil
 
 		case <-sm.done:
 			// 关闭前执行最后一次持久化
@@ -169,11 +163,19 @@ func (sm *SyncManager) syncLoop() {
 
 // copyState 创建状态的深拷贝
 func (sm *SyncManager) copyState() *StateData {
+	return cloneStateData(sm.state)
+}
+
+func cloneStateData(data *StateData) *StateData {
 	copy := &StateData{
 		Apps: make(map[string]*AppState),
 	}
 
-	for name, appState := range sm.state.Apps {
+	if data == nil {
+		return copy
+	}
+
+	for name, appState := range data.Apps {
 		// 深拷贝配置
 		var config *ProcessConfig
 		if appState.Config != nil {
@@ -208,6 +210,13 @@ func (sm *SyncManager) GetState() *StateData {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.copyState()
+}
+
+// ReplaceState 用于恢复流程，将外部状态完整写回内存。
+func (sm *SyncManager) ReplaceState(data *StateData) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.state = cloneStateData(data)
 }
 
 // UpdateLogPath 更新日志路径

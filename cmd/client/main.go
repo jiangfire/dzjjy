@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/jiangfire/dzjjy/internal/client/deploy"
 )
@@ -151,7 +152,7 @@ func logsCmd() {
 	token := fs.String("token", "", "auth token (required)")
 	app := fs.String("app", "default", "application name (for multi-app mode)")
 	lines := fs.Int("lines", 100, "number of log lines to retrieve")
-	follow := fs.Bool("follow", false, "follow log output (not implemented yet)")
+	follow := fs.Bool("follow", false, "follow log output")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		slog.Error("failed to parse flags", "error", err)
@@ -165,7 +166,8 @@ func logsCmd() {
 	}
 
 	if *follow {
-		slog.Warn("follow mode is not implemented yet, showing last logs only")
+		followLogs(*server, *token, *app, *lines)
+		return
 	}
 
 	client := deploy.NewClient(*server, *token)
@@ -189,6 +191,46 @@ func logsCmd() {
 	}
 
 	slog.Info("logs retrieved", "app", *app, "count", len(logs), "server", *server)
+}
+
+func followLogs(server, token, app string, lines int) {
+	client := deploy.NewClient(server, token)
+	seen := make(map[string]struct{})
+
+	printBatch := func(logs []map[string]any) {
+		for _, log := range logs {
+			key := fmt.Sprintf("%v|%v|%v", log["timestamp"], log["type"], log["message"])
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			fmt.Printf("[%v] [%v] %v\n", log["timestamp"], log["type"], log["message"])
+		}
+	}
+
+	initial, err := client.Logs(app, lines)
+	if err != nil {
+		slog.Error("logs query failed", "error", err)
+		os.Exit(1)
+	}
+	printBatch(initial)
+
+	pollLines := lines
+	if pollLines < 200 {
+		pollLines = 200
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		logs, err := client.Logs(app, pollLines)
+		if err != nil {
+			slog.Error("follow logs failed", "error", err)
+			os.Exit(1)
+		}
+		printBatch(logs)
+	}
 }
 
 func statusCmd() {

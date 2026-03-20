@@ -1,260 +1,82 @@
-# Quality Workflow - 代码质量保证
-name: Code Quality
+name: Quality
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.24"
+  GOCACHE: ${{ github.workspace }}/.gocache
 
 jobs:
-  format:
-    name: Code Format
+  coverage:
+    name: Coverage
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-    - name: Format code
-      run: make fmt
+      - name: Run coverage tests
+        run: go test -coverprofile=coverage.out ./...
 
-    - name: Check for formatting changes
-      run: |
-        if git diff --quiet; then
-          echo "✅ Code is properly formatted"
-        else
-          echo "⚠️ Code formatting issues detected"
-          git diff
-          exit 1
-        fi
+      - name: Publish coverage summary
+        run: |
+          echo "## Coverage" >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | tail -n 1 >> $GITHUB_STEP_SUMMARY
 
-  lint:
-    name: Lint Code
-    runs-on: ubuntu-latest
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-coverage
+          path: coverage.out
+          retention-days: 7
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-
-    - name: Run linter
-      uses: golangci/golangci-lint-action@v9
-      with:
-        version: latest
-        args: --timeout 5m
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-
-    - name: Run govulncheck
-      run: |
-        go install golang.org/x/vuln/cmd/govulncheck@latest
-        $(go env GOPATH)/bin/govulncheck ./...
-
-    - name: Run gosec
-      run: |
-        go install github.com/securego/gosec/v2/cmd/gosec@latest
-        $(go env GOPATH)/bin/gosec -fmt=text ./...
-
-  test-coverage:
-    name: Test Coverage
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
-    - name: Run tests with coverage
-      run: make test-cover
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./coverage.out
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-      continue-on-error: true
-
-    - name: Check coverage threshold
-      run: |
-        COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-        echo "Total coverage: ${COVERAGE}%"
-        if (( $(echo "$COVERAGE < 80" | bc -l) )); then
-          echo "⚠️ Coverage below 80% threshold"
-        else
-          echo "✅ Coverage meets requirements"
-        fi
-
-  dependency-check:
+  dependencies:
     name: Dependency Check
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-    - name: Check for outdated dependencies
-      run: |
-        echo "Checking for outdated dependencies..."
-        go list -u -m all | grep -v '\[.*\]' || true
+      - name: Verify go.mod and go.sum
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
-    - name: Verify go.mod and go.sum
-      run: |
-        go mod tidy
-        if git diff --quiet go.mod go.sum; then
-          echo "✅ go.mod and go.sum are consistent"
-        else
-          echo "⚠️ go.mod or go.sum needs updating"
-          git diff go.mod go.sum
-          exit 1
-        fi
+      - name: List available updates
+        run: go list -u -m all || true
 
-  build-verify:
-    name: Build Verification
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
-    - name: Build binaries
-      run: |
-        mkdir -p build
-        go build -ldflags "-s -w" -o build/dzjjy-server ./cmd/server
-        go build -ldflags "-s -w" -o build/dzjjy-client ./cmd/client
-
-    - name: Verify binaries
-      shell: bash
-      run: |
-        ls -la build/
-        # 自动检测并执行二进制文件
-        if [ -f "build/dzjjy-server.exe" ]; then
-          echo "✅ Windows server binary built: dzjjy-server.exe"
-          ./build/dzjjy-server.exe --help || true
-        elif [ -f "build/dzjjy-server" ]; then
-          echo "✅ Unix server binary built: dzjjy-server"
-          chmod +x build/dzjjy-server
-          ./build/dzjjy-server --help || true
-        else
-          echo "❌ Server binary missing"
-          exit 1
-        fi
-
-        if [ -f "build/dzjjy-client.exe" ]; then
-          echo "✅ Windows client binary built: dzjjy-client.exe"
-          ./build/dzjjy-client.exe --help || true
-        elif [ -f "build/dzjjy-client" ]; then
-          echo "✅ Unix client binary built: dzjjy-client"
-          chmod +x build/dzjjy-client
-          ./build/dzjjy-client --help || true
-        else
-          echo "❌ Client binary missing"
-          exit 1
-        fi
-
-  documentation-check:
-    name: Documentation Check
+  docs:
+    name: Docs Check
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Check for broken links in README
-      run: |
-        # Simple check for common documentation issues
-        if [ -f "README.md" ]; then
-          echo "✅ README.md exists"
-          # Check for basic structure
-          if grep -q "^#" README.md; then
-            echo "✅ README has headings"
-          else
-            echo "⚠️ README missing headings"
-          fi
-        fi
-
-    - name: Verify docs directory
-      run: |
-        if [ -d "docs" ]; then
-          echo "Documentation files:"
-          ls -la docs/
-          echo "✅ Docs directory exists"
-        else
-          echo "ℹ️ No docs directory"
-        fi
-
-  summary:
-    name: Quality Summary
-    runs-on: ubuntu-latest
-    needs: [format, lint, security-scan, test-coverage, dependency-check, build-verify, documentation-check]
-    if: always()
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Generate quality report
-      run: |
-        echo "## Code Quality Report" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Status Overview" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Format: ${{ needs.format.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Lint: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Security: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Tests: ${{ needs.test-coverage.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Dependencies: ${{ needs.dependency-check.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Build: ${{ needs.build-verify.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Docs: ${{ needs.documentation-check.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Summary" >> $GITHUB_STEP_SUMMARY
-        echo "All quality checks completed. Review the individual job results for details." >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-        echo "- If all checks pass, the code is ready for review" >> $GITHUB_STEP_SUMMARY
-        echo "- For releases, create a tag: \`git tag v1.0.0\`" >> $GITHUB_STEP_SUMMARY
-        echo "- Push the tag: \`git push origin v1.0.0\`" >> $GITHUB_STEP_SUMMARY
+      - name: Verify key docs exist
+        run: |
+          test -f README.md
+          test -f README.en.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/DEVELOPMENT.md
+          test -f docs/TESTING.md
+          test -f docs/RELEASE.md

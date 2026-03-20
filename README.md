@@ -41,8 +41,8 @@
 - 多应用管理：按应用名部署与操作，不同应用互不干扰。
 - 部署方式灵活：支持单文件或压缩包（`.zip`、`.tar`、`.tar.gz`、`.gz`）。
 - 进程守护：支持 `auto-restart` 和最大重启次数限制。
-- 日志查看：按应用查询日志，支持 `lines` 参数。
-- 状态持久化：可通过 `-state` 启用状态文件，服务重启后恢复状态。
+- 日志查看：按应用查询日志，支持 `lines` 参数，客户端支持 `--follow` 轮询跟随。
+- 状态持久化：可通过 `-state` 启用状态文件，服务重启后恢复应用元数据，并按配置自动重启。
 - 基础安全控制：Bearer Token 认证、路径/输入校验。
 
 ## 快速开始
@@ -79,7 +79,7 @@ Windows 下对应为 `.exe` 可执行文件。
 
 - `-token`：认证令牌（必填）
 - `-port`：服务端口（默认 `8080`）
-- `-upload`：上传目录（默认 `./uploads`）
+- `-upload`：上传暂存目录（默认 `./uploads`，保留每个应用最近一次上传的原始文件）
 - `-work`：工作目录（默认 `./workspace`）
 - `-log`：日志目录（默认 `./logs`）
 - `-state`：状态文件（可选，建议开启）
@@ -179,6 +179,10 @@ Authorization: Bearer <token>
 | GET | `/api/v1/apps/{name}/status` | 查看状态 |
 | GET | `/api/v1/apps/{name}/logs?lines=N` | 查看日志 |
 | DELETE | `/api/v1/apps/{name}/remove` | 删除应用 |
+
+兼容删除路径：
+
+- `DELETE /api/v1/apps/{name}`
 
 兼容单应用接口（`default`）：
 

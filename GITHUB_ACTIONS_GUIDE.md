@@ -1,281 +1,168 @@
 # GitHub Actions 快速使用指南
 
-## 📋 概述
+## 概述
 
-本项目已配置完整的 CI/CD 自动化流程，包含 4 个 GitHub Actions workflow：
+当前仓库的 GitHub CI/CD 分为 4 个 workflow：
 
-1. **CI** - 自动测试和构建
-2. **Release** - 自动发布多平台版本
-3. **Tag Check** - 标签验证和预发布检查
-4. **Code Quality** - 代码质量保证
+1. `CI`：主校验，面向日常提交和 PR
+2. `Release`：版本标签触发的正式发布
+3. `Tag Validation`：标签格式校验
+4. `Quality`：手动或定时运行的质量巡检
 
-## 🚀 快速开始
+## 工作流说明
 
-### 1. 推送代码自动测试
+### CI
+
+- 触发：`push` 到 `main/develop`，或针对 `main/develop` 的 PR
+- 内容：
+  - `golangci-lint`
+  - `go test -race`
+  - `govulncheck`
+  - `gosec`
+  - Linux / Windows / macOS 构建验证
+
+### Release
+
+- 触发：推送语义化版本标签，例如 `v1.2.3`、`v1.2.3-beta.1`
+- 内容：
+  - 发布前再次执行 lint / test / security check
+  - 生成 `dist/` 下的多平台构建产物
+  - 生成 `checksums.txt`
+  - 生成压缩包
+  - 自动创建 GitHub Release
+
+### Tag Validation
+
+- 触发：任意 tag push
+- 内容：
+  - 检查标签是否符合语义化版本规则
+
+### Quality
+
+- 触发：手动执行，或每周定时巡检
+- 内容：
+  - 覆盖率报告
+  - `go.mod` / `go.sum` 一致性检查
+  - 关键文档存在性检查
+
+## 快速开始
+
+### 1. 提交代码触发 CI
 
 ```bash
 git add .
-git commit -m "feat: your feature"
+git commit -m "feat: your change"
 git push origin main
 ```
 
-GitHub Actions 会自动：
-- ✅ 运行单元测试
-- ✅ 构建二进制文件
-- ✅ 代码质量检查
-- ✅ 安全扫描
+GitHub Actions 会自动运行 CI。
 
 ### 2. 创建发布版本
 
 ```bash
-# 1. 确保代码已合并到 main
 git checkout main
 git pull origin main
-
-# 2. 创建版本标签
 git tag v1.0.0
-
-# 3. 推送标签
 git push origin v1.0.0
 ```
 
-GitHub Actions 会自动：
-- ✅ 构建所有平台二进制 (Linux/Windows/macOS)
-- ✅ 生成校验和文件
-- ✅ 创建 GitHub Release
-- ✅ 上传所有发布包
+推送后会先经过 `Tag Validation`，再进入 `Release`。
 
-### 3. 预发布测试
+### 3. 创建预发布版本
 
 ```bash
-# 创建预发布版本
-git tag v1.0.0-beta.1
-git push origin v1.0.0-beta.1
-```
-
-## 📦 发布的产物
-
-每次发布会自动生成：
-
-### 二进制文件
-- `dzjjy-server-linux-amd64`
-- `dzjjy-server-linux-arm64`
-- `dzjjy-server-windows-amd64.exe`
-- `dzjjy-server-darwin-amd64`
-- `dzjjy-server-darwin-arm64`
-- 同样的客户端文件 `dzjjy-client-*`
-
-### 打包文件
-- `dzjjy-server-linux-amd64.tar.gz`
-- `dzjjy-client-linux-amd64.tar.gz`
-- 其他平台的 tar.gz 包
-
-### 校验文件
-- `checksums.txt` - 所有文件的 SHA256 校验和
-
-## 🔧 使用发布的二进制
-
-### 下载和安装
-
-```bash
-# 1. 下载对应平台的包
-wget https://github.com/yourusername/dzjjy/releases/download/v1.0.0/dzjjy-server-linux-amd64.tar.gz
-
-# 2. 解压
-tar -xzf dzjjy-server-linux-amd64.tar.gz
-
-# 3. 验证校验和（可选）
-sha256sum -c checksums.txt 2>/dev/null | grep dzjjy-server
-
-# 4. 运行
-./dzjjy-server -token your-token -port 8080 -state ./state.json
-```
-
-### 客户端使用
-
-```bash
-# 部署应用
-./dzjjy-client deploy \
-  -server http://localhost:8080 \
-  -token your-token \
-  -file app.zip \
-  -type runtime \
-  -executable python3 \
-  -entry app.py \
-  -auto-restart \
-  -max-restarts 5
-```
-
-## 📊 工作流状态说明
-
-### CI 状态
-- ✅ **绿色**: 所有检查通过
-- ⏳ **黄色**: 正在运行
-- ❌ **红色**: 某个检查失败
-
-### Release 状态
-- ✅ **成功**: 所有平台构建完成，Release 已创建
-- ❌ **失败**: 检查 Actions 日志查看详情
-
-## 🎯 常见场景
-
-### 场景 1: 日常开发
-
-```bash
-# 开发功能
-git checkout -b feature/deployment-enhancement
-# ... 编码 ...
-
-# 提交并推送
-git add .
-git commit -m "feat: improve deployment error handling"
-git push origin feature/deployment-enhancement
-
-# 创建 PR，等待 CI 通过，然后合并
-```
-
-### 场景 2: 紧急修复
-
-```bash
-# 从 main 创建修复分支
-git checkout -b hotfix/security-fix
-# ... 修复 ...
-
-# 提交并创建标签
-git add .
-git commit -m "fix: security vulnerability in auth"
-git tag v1.0.1
-git push origin hotfix/security-fix
-git push origin v1.0.1
-```
-
-### 场景 3: 测试版本
-
-```bash
-# 创建测试版本
 git tag v1.1.0-beta.1
 git push origin v1.1.0-beta.1
-
-# 测试发布包
-# 下载测试，确认无误后创建正式版
-git tag v1.1.0
-git push origin v1.1.0
 ```
 
-## 🔍 查看工作流运行
+带 `-beta` / `-rc` 的标签会在 GitHub Release 中标记为预发布。
 
-### GitHub 网页界面
-1. 访问仓库主页
-2. 点击 **Actions** 标签
-3. 选择具体的工作流
-4. 查看运行日志
+## 本地对应命令
 
-### 命令行查看
-```bash
-# 查看最近的运行
-gh run list
-
-# 查看具体运行详情
-gh run view <run-id>
-
-# 查看日志
-gh run view <run-id> --log
-```
-
-## ⚙️ 配置说明
-
-### Makefile 集成
-
-所有 workflow 都使用 Makefile 命令：
+发布相关 workflow 仍然复用仓库里的构建命令：
 
 ```bash
-make ci          # 完整 CI 流程
-make ci-release  # 完整发布流程
-make release     # 构建所有平台
-make test        # 运行测试
-make lint        # 代码检查
-make build       # 本地构建
+go test ./...
+golangci-lint run
+gosec ./...
+make release
+make checksum
+make package
 ```
 
-### 触发条件
+## 常见场景
 
-| Workflow | 触发方式 |
-|----------|----------|
-| CI | 推送到 main/develop，或 PR |
-| Release | 创建 v* 标签 |
-| Tag Check | 创建任何标签 |
-| Quality | 推送到 main/develop，或 PR |
+### 日常开发
 
-## 🐛 故障排除
+```bash
+git checkout -b feature/your-feature
+# ... 开发 ...
+git add .
+git commit -m "feat: add your feature"
+git push origin feature/your-feature
+```
+
+创建 PR 后，CI 会自动检查。
+
+### 正式发布
+
+```bash
+git checkout main
+git pull origin main
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+### 质量巡检
+
+在 GitHub 仓库的 `Actions` 页面手动运行 `Quality`，适合定期检查覆盖率、依赖和文档状态。
+
+## 故障排查
 
 ### CI 失败
 
-```bash
-# 本地复现问题
-make clean
-make deps
-make test
-make lint
+优先在本地复现：
 
-# 修复后重新提交
-git add .
-git commit -m "fix: resolve test failures"
-git push
+```bash
+go test ./...
+golangci-lint run
+gosec ./...
 ```
 
 ### Release 失败
 
-1. **检查标签格式**: 必须是 `v1.2.3` 格式
-2. **本地测试**: `make release`
-3. **查看日志**: GitHub Actions → Release → 具体运行
+优先检查：
 
-### 构建产物缺失
+1. 标签格式是否是 `vX.Y.Z` 或 `vX.Y.Z-suffix`
+2. 本地是否能完成下面这些命令
 
 ```bash
-# 检查本地构建
 make release
-ls -la dist/
-
-# 如果本地成功，检查 Actions 配置
+make checksum
+make package
 ```
 
-## 📝 最佳实践
+### go.mod / go.sum 检查失败
 
-1. **标签规范**
-   - ✅ 使用语义化版本: `v1.2.3`
-   - ✅ 预发布: `v1.2.3-beta.1`
-   - ❌ 不要: `release-1.2.3`, `v1.2`
+运行：
 
-2. **提交信息**
-   - ✅ `feat: add new feature`
-   - ✅ `fix: resolve bug`
-   - ✅ `docs: update readme`
-   - ❌ `update code`
+```bash
+go mod tidy
+git diff go.mod go.sum
+```
 
-3. **发布频率**
-   - 小功能: 合并后立即发布
-   - 大功能: 稳定后发布
-   - 修复: 修复后立即发布
+## 最佳实践
 
-4. **测试**
-   - 本地测试通过再推送
-   - 等待 CI 通过再合并
-   - 预发布测试后再正式发布
+1. 先等 CI 通过，再打发布标签。
+2. 预发布版本使用 `-beta.N` 或 `-rc.N`。
+3. `Quality` 更适合周期性治理，不必在每次提交都重复跑。
+4. 版本发布前确认 README 和 `docs/RELEASE.md` 里的命令仍然有效。
 
-## 📚 相关文档
+## 相关文件
 
-- [Makefile 说明](./Makefile) - 构建命令详解
-- [工作流文件](./.github/workflows/) - 原始配置
-- [工作流说明](./.github/README.md) - 详细文档
-- [项目 README](./README.md) - 项目介绍
-
-## 🆘 获取帮助
-
-1. **查看日志**: GitHub Actions 页面
-2. **检查配置**: `.github/workflows/` 目录
-3. **本地测试**: 使用 Makefile 命令
-4. **提交 Issue**: 报告问题或建议
-
----
-
-**提示**: 所有 workflow 都是可配置的，你可以根据需要调整触发条件、构建平台等参数。
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `.github/workflows/tag-check.yml`
+- `.github/workflows/quality.yml`
+- `docs/RELEASE.md`
+- `README.md`

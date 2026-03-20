@@ -47,6 +47,8 @@ func (rm *RestoreManager) Restore() error {
 		}
 	}
 
+	rm.syncManager.ReplaceState(&stateFile.Data)
+
 	return nil
 }
 
@@ -83,6 +85,13 @@ func (rm *RestoreManager) restoreApp(appName string, state *AppState) error {
 			AppName: appName,
 			Config:  state.Config,
 		})
+		if state.Status == StatusRunning {
+			rm.syncManager.OnAppEvent(AppEvent{
+				Type:    "start",
+				AppName: appName,
+				PID:     state.PID,
+			})
+		}
 	}
 
 	return nil

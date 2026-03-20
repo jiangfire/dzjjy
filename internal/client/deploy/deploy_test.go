@@ -283,6 +283,40 @@ func TestRestart_Failure(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRemove_Success(t *testing.T) {
+	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/apps/default/remove", r.URL.Path)
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+
+		w.Header().Set("Content-Type", "application/json")
+		writeResponse(t, w, api.Response{
+			Success: true,
+			Message: "application removed",
+		})
+	})
+	defer server.Close()
+
+	client := deploy.NewClient(server.URL, "test-token")
+	err := client.Remove("default")
+	assert.NoError(t, err)
+}
+
+func TestStatus_PlainTextError(t *testing.T) {
+	server := mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, err := w.Write([]byte("invalid token"))
+		require.NoError(t, err)
+	})
+	defer server.Close()
+
+	client := deploy.NewClient(server.URL, "test-token")
+	_, err := client.Status("default")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid token")
+}
+
 // ==================== Logs 测试 ====================
 
 func TestLogs_Success(t *testing.T) {

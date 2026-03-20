@@ -100,6 +100,7 @@ type Manager struct {
 	eventAdapter *EventAdapter // 事件通知适配器
 	appName      string        // 应用名称（用于事件）
 	monitorDone  chan struct{} // 监控goroutine完成信号
+	recovered    bool          // 是否为恢复的外部进程（无监控）
 }
 
 // NewManager 创建管理器
@@ -123,6 +124,57 @@ func (m *Manager) SetAppName(appName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.appName = appName
+}
+
+// Restore 从持久化状态恢复管理器元数据。
+// 如果 running=true，则尝试绑定到现有 PID 以支持 status/stop/restart。
+func (m *Manager) Restore(config *ProcessConfig, pid int, startTimeUnix int64, restartCount int, running bool, logPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if config != nil {
+		m.config = &ProcessConfig{
+			Type:        config.Type,
+			WorkDir:     config.WorkDir,
+			Executable:  config.Executable,
+			Entry:       config.Entry,
+			Args:        config.Args,
+			AutoRestart: config.AutoRestart,
+			MaxRestarts: config.MaxRestarts,
+		}
+	}
+
+	m.restartCount = restartCount
+	m.running = running
+	m.recovered = running
+	m.cmd = nil
+	m.monitorDone = nil
+
+	if startTimeUnix > 0 {
+		m.startTime = time.Unix(startTimeUnix, 0)
+	} else {
+		m.startTime = time.Time{}
+	}
+
+	if logPath != "" {
+		m.logger = NewLogger(m.logDir, m.appName)
+		m.logger.SetLogPath(logPath)
+	}
+
+	if !running {
+		m.ctx = nil
+		m.cancel = nil
+		return nil
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("failed to restore process %d: %w", pid, err)
+	}
+
+	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.cmd = &exec.Cmd{Process: process}
+	return nil
 }
 
 // notify 发送事件通知（内部方法）
@@ -170,6 +222,7 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.restartCount = 0
 	m.running = true
+	m.recovered = false
 	m.monitorDone = make(chan struct{})
 
 	// 创建日志管理器（使用安全的文件名）
