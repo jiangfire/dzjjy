@@ -349,7 +349,13 @@ func readLogsFromFile(logDir, logPath string, lines int) []LogEntry {
 		return []LogEntry{}
 	}
 
-	content, err := root.ReadFile(relPath)
+	file, err := root.Open(relPath)
+	if err != nil {
+		return []LogEntry{}
+	}
+	defer func() { _ = file.Close() }()
+
+	content, err := io.ReadAll(file)
 	if err != nil || len(content) == 0 {
 		return []LogEntry{}
 	}
