@@ -273,7 +273,16 @@ func (s *StateStore) writeFileInStateDir(path string, data []byte) error {
 		return err
 	}
 
-	return root.WriteFile(relPath, data, 0600)
+	file, err := root.OpenFile(relPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 // Clear 清除状态文件
