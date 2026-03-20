@@ -204,7 +204,7 @@ func (h *Handler) extractDeployParams(w http.ResponseWriter, r *http.Request) (s
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	// 解析multipart表单
-	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil { // #nosec G120 -- request body is already bounded by MaxBytesReader above.
 		return "", nil, fmt.Errorf("failed to parse form: %v", err)
 	}
 
