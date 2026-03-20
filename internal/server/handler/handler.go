@@ -144,6 +144,9 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 限制整个 multipart 请求体大小，避免内存和磁盘被恶意占满。
+	r.Body = http.MaxBytesReader(w, r.Body, 110<<20)
+
 	// 1. 提取和验证参数
 	appName, config, err := h.extractDeployParams(r)
 	if err != nil {

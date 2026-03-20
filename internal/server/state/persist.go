@@ -215,7 +215,7 @@ func (s *StateStore) backupLocked() error {
 		return err
 	}
 
-	return os.WriteFile(backupFile, data, 0600)
+	return s.writeFileInStateDir(backupFile, data)
 }
 
 // restoreFromBackup 从备份恢复
@@ -253,11 +253,27 @@ func (s *StateStore) restoreFromBackup() (*StateFile, error) {
 	s.log.Info("restored from backup", "file", latestBackup)
 
 	// 用备份替换损坏的主文件
-	if err := os.WriteFile(s.stateFile, data, 0600); err != nil {
+	if err := s.writeFileInStateDir(s.stateFile, data); err != nil {
 		return nil, fmt.Errorf("failed to write state file: %w", err)
 	}
 
 	return &stateFile, nil
+}
+
+func (s *StateStore) writeFileInStateDir(path string, data []byte) error {
+	rootDir := filepath.Dir(s.stateFile)
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	relPath, err := filepath.Rel(rootDir, path)
+	if err != nil {
+		return err
+	}
+
+	return root.WriteFile(relPath, data, 0600)
 }
 
 // Clear 清除状态文件
