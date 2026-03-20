@@ -144,11 +144,8 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 限制整个 multipart 请求体大小，避免内存和磁盘被恶意占满。
-	r.Body = http.MaxBytesReader(w, r.Body, 110<<20)
-
 	// 1. 提取和验证参数
-	appName, config, err := h.extractDeployParams(r)
+	appName, config, err := h.extractDeployParams(w, r)
 	if err != nil {
 		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -193,15 +190,21 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 }
 
 // extractDeployParams 提取和验证部署参数
-func (h *Handler) extractDeployParams(r *http.Request) (string, *runtime.ProcessConfig, error) {
+func (h *Handler) extractDeployParams(w http.ResponseWriter, r *http.Request) (string, *runtime.ProcessConfig, error) {
+	const maxMultipartMemory = 100 << 20
+	const maxRequestBodySize = maxMultipartMemory + (10 << 20)
+
 	// 从 URL 路径获取应用名称
 	appName := h.getAppNameWithDefault(r)
 	if err := validateAppName(appName); err != nil {
 		return "", nil, err
 	}
 
+	// 将请求体上限与表单解析放在同一处，便于静态分析工具识别。
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
 	// 解析multipart表单
-	if err := r.ParseMultipartForm(100 << 20); err != nil { // 100MB
+	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
 		return "", nil, fmt.Errorf("failed to parse form: %v", err)
 	}
 
