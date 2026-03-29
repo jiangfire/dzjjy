@@ -203,7 +203,14 @@ func TestPrepareWorkDir_FailsWhenRootIsFile(t *testing.T) {
 	err := h.prepareWorkDir("app")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create work dir")
+	// Platform-specific errors:
+	// - Linux: os.RemoveAll fails with "not a directory" → "failed to clean work dir"
+	// - Windows: os.RemoveAll succeeds, os.MkdirAll fails → "failed to create work dir"
+	errMsg := err.Error()
+	assertTrue := assert.True(t,
+		strings.Contains(errMsg, "failed to clean work dir") || strings.Contains(errMsg, "failed to create work dir"),
+		"error should mention clean or create, got: %s", errMsg)
+	_ = assertTrue // suppress unused warning
 }
 
 func TestHandleFileUpload_MissingFileReturnsError(t *testing.T) {
@@ -262,7 +269,14 @@ func TestHandleFileUpload_FailsWhenUploadRootIsFile(t *testing.T) {
 	err := h.handleFileUpload(req, "app")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create upload dir")
+	// Platform-specific errors:
+	// - Linux: os.RemoveAll fails with "not a directory" → "failed to clean upload dir"
+	// - Windows: os.RemoveAll succeeds, os.MkdirAll fails → "failed to create upload dir"
+	errMsg := err.Error()
+	assertTrue := assert.True(t,
+		strings.Contains(errMsg, "failed to clean upload dir") || strings.Contains(errMsg, "failed to create upload dir"),
+		"error should mention clean or create, got: %s", errMsg)
+	_ = assertTrue // suppress unused warning
 }
 
 func TestCopyFileBetweenRoots_RejectsEscapePath(t *testing.T) {
