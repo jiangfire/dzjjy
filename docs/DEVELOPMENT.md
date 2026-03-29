@@ -1,7 +1,7 @@
 # 开发指南
 
-> 文档更新：2026-01-01
-> 优化：移除重复内容，专注于开发实践
+> 文档更新：2026-03-21
+> 说明：已同步当前多应用 API、构建目录和发布后的文档状态
 
 This file provides guidance to developers when working with code in this repository.
 
@@ -13,39 +13,37 @@ dzjjy (简易部署服务) is a lightweight deployment tool for development envi
 
 ### Building
 ```bash
-# Build server
-go build -o dzjjy-server ./cmd/server
+# Recommended
+make build
 
-# Build client
-go build -o dzjjy-client ./cmd/client
-
-# Build both (Windows)
-go build -o dzjjy-server.exe ./cmd/server && go build -o dzjjy-client.exe ./cmd/client
+# Or build individually
+go build -o build/dzjjy-server ./cmd/server
+go build -o build/dzjjy-client ./cmd/client
 ```
 
 ### Running Server
 ```bash
 # Minimal start (token required)
-./dzjjy-server -token <your-token>
+./build/dzjjy-server -token <your-token>
 
 # Full configuration
-./dzjjy-server -token <token> -port 8080 -upload ./uploads -work ./workspace -log ./logs
+./build/dzjjy-server -token <token> -port 8080 -upload ./uploads -work ./workspace -log ./logs -state ./state.json
 ```
 
 ### Client Commands
 ```bash
 # Deploy application
-./dzjjy-client deploy -server <url> -token <token> -file <file> -type <exec|runtime> -executable <cmd> [-entry <file>] [-auto-restart] [-max-restarts <n>]
+./build/dzjjy-client deploy -server <url> -token <token> -app <name> -file <file> -type <exec|runtime> -executable <cmd> [-entry <file>] [-auto-restart] [-max-restarts <n>]
 
 # Query status
-./dzjjy-client status -server <url> -token <token>
+./build/dzjjy-client status -server <url> -token <token> -app <name>
 
 # View logs
-./dzjjy-client logs -server <url> -token <token> [-lines <n>]
+./build/dzjjy-client logs -server <url> -token <token> -app <name> [-lines <n>] [--follow]
 
 # Restart/Stop
-./dzjjy-client restart -server <url> -token <token>
-./dzjjy-client stop -server <url> -token <token>
+./build/dzjjy-client restart -server <url> -token <token> -app <name>
+./build/dzjjy-client stop -server <url> -token <token> -app <name>
 ```
 
 ## Application Types
@@ -94,15 +92,28 @@ Always include relevant context fields (pid, type, executable, error, etc.) for 
 
 ## API Endpoints
 
-All require `Authorization: Bearer <token>` except `/health`:
+All require `Authorization: Bearer <token>` except `/health`.
 
-- `POST /api/v1/deploy` - multipart/form-data upload with metadata
-- `POST /api/v1/stop` - stop running application
-- `POST /api/v1/restart` - restart running application
-- `POST /api/v1/start` - start with JSON config
-- `GET /api/v1/status` - query process status
-- `GET /api/v1/logs?lines=N` - retrieve recent logs
-- `GET /health` - health check (no auth)
+Current multi-app endpoints:
+
+- `GET /api/v1/apps` - list applications
+- `POST /api/v1/apps/{name}/deploy` - multipart upload with metadata
+- `POST /api/v1/apps/{name}/start` - start application
+- `POST /api/v1/apps/{name}/stop` - stop application
+- `POST /api/v1/apps/{name}/restart` - restart application
+- `GET /api/v1/apps/{name}/status` - query status
+- `GET /api/v1/apps/{name}/logs?lines=N` - retrieve recent logs
+- `DELETE /api/v1/apps/{name}/remove` - remove application
+- `GET /health` - health check
+
+Legacy single-app compatibility endpoints remain for `default`:
+
+- `POST /api/v1/deploy`
+- `POST /api/v1/start`
+- `POST /api/v1/stop`
+- `POST /api/v1/restart`
+- `GET /api/v1/status`
+- `GET /api/v1/logs`
 
 ## Important Constraints
 
@@ -140,6 +151,9 @@ go test -cover ./internal/server/...
 # Generate HTML report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
+
+# Match CI release-grade checks more closely
+go test -race ./...
 ```
 
 ## Security

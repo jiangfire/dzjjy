@@ -101,8 +101,9 @@ func main() {
 	pid := manager.GetPID()
 	assert.Greater(t, pid, 0, "PID应该大于0")
 
-	time.Sleep(200 * time.Millisecond)
-	assert.False(t, manager.IsRunning(), "进程应该已经退出")
+	assert.Eventually(t, func() bool {
+		return !manager.IsRunning()
+	}, 5*time.Second, 50*time.Millisecond, "进程应该已经退出")
 }
 
 // TestManager_Start_AlreadyRunning 测试重复启动

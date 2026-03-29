@@ -1,5 +1,8 @@
 # GitHub Actions 快速使用指南
 
+> 文档更新：2026-03-21
+> 当前正式版本：`v1.0.1`
+
 ## 概述
 
 当前仓库的 GitHub CI/CD 分为 4 个 workflow：
@@ -10,6 +13,13 @@
 4. `Quality`：手动或定时运行的质量巡检
 
 ## 工作流说明
+
+当前 workflow 基线：
+
+- Go 版本：CI / Release / Quality 使用 `1.25.8`
+- Checkout Action：`actions/checkout@v5`
+- Go Action：`actions/setup-go@v6`
+- Lint Action：`golangci/golangci-lint-action@v9`
 
 ### CI
 
@@ -62,8 +72,8 @@ GitHub Actions 会自动运行 CI。
 ```bash
 git checkout main
 git pull origin main
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 推送后会先经过 `Tag Validation`，再进入 `Release`。
@@ -82,8 +92,9 @@ git push origin v1.1.0-beta.1
 发布相关 workflow 仍然复用仓库里的构建命令：
 
 ```bash
-go test ./...
+go test -race ./...
 golangci-lint run
+govulncheck ./...
 gosec ./...
 make release
 make checksum
@@ -109,6 +120,13 @@ git push origin feature/your-feature
 ```bash
 git checkout main
 git pull origin main
+git tag -a v1.0.1 -m "Release v1.0.1"
+git push origin v1.0.1
+```
+
+如果要发布后续版本：
+
+```bash
 git tag v1.2.3
 git push origin v1.2.3
 ```
@@ -124,8 +142,9 @@ git push origin v1.2.3
 优先在本地复现：
 
 ```bash
-go test ./...
+go test -race ./...
 golangci-lint run
+govulncheck ./...
 gosec ./...
 ```
 
@@ -156,7 +175,8 @@ git diff go.mod go.sum
 1. 先等 CI 通过，再打发布标签。
 2. 预发布版本使用 `-beta.N` 或 `-rc.N`。
 3. `Quality` 更适合周期性治理，不必在每次提交都重复跑。
-4. 版本发布前确认 README 和 `docs/RELEASE.md` 里的命令仍然有效。
+4. 发布前优先核对 `.github/workflows/*.yml` 里的实际 Go 版本和 action 版本，避免文档与 workflow 漂移。
+5. 版本发布前确认 README 和 `docs/RELEASE.md` 里的命令仍然有效。
 
 ## 相关文件
 

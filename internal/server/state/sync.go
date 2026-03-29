@@ -23,6 +23,8 @@ type SyncManager struct {
 	mu          sync.RWMutex
 	persistChan chan AppEvent
 	done        chan struct{}
+	stopped     chan struct{}
+	closeOnce   sync.Once
 	log         *slog.Logger
 }
 
@@ -33,6 +35,7 @@ func NewSyncManager(store *StateStore) *SyncManager {
 		state:       &StateData{Apps: make(map[string]*AppState)},
 		persistChan: make(chan AppEvent, 100), // 缓冲100个事件
 		done:        make(chan struct{}),
+		stopped:     make(chan struct{}),
 		log:         slog.Default().With("module", "state-sync"),
 	}
 
@@ -106,11 +109,16 @@ func (sm *SyncManager) updateAppState(event AppEvent) {
 		if event.Config != nil {
 			appState.LogPath = event.Config.WorkDir // 临时使用
 		}
+
+	case "deregister":
+		delete(sm.state.Apps, appName)
 	}
 }
 
 // syncLoop 后台持久化循环
 func (sm *SyncManager) syncLoop() {
+	defer close(sm.stopped)
+
 	// 延迟持久化定时器（100ms延迟，批量写入）
 	var persistTimer *time.Timer
 	var timerC <-chan time.Time
@@ -147,14 +155,12 @@ func (sm *SyncManager) syncLoop() {
 			timerC = nil
 
 		case <-sm.done:
-			// 关闭前执行最后一次持久化
-			if len(pendingEvents) > 0 {
-				sm.mu.RLock()
-				stateCopy := sm.copyState()
-				sm.mu.RUnlock()
-				if err := sm.store.Persist(stateCopy); err != nil {
-					slog.Warn("failed to persist state on close", "error", err)
-				}
+			// 关闭前总是持久化一次当前内存状态，避免事件还在缓冲区或只更新了内存时丢状态。
+			sm.mu.RLock()
+			stateCopy := sm.copyState()
+			sm.mu.RUnlock()
+			if err := sm.store.Persist(stateCopy); err != nil {
+				slog.Warn("failed to persist state on close", "error", err)
 			}
 			return
 		}
@@ -231,7 +237,10 @@ func (sm *SyncManager) UpdateLogPath(appName, logPath string) {
 
 // Close 关闭同步管理器
 func (sm *SyncManager) Close() {
-	close(sm.done)
+	sm.closeOnce.Do(func() {
+		close(sm.done)
+	})
+	<-sm.stopped
 }
 
 // ManualPersist 手动触发持久化（用于紧急保存）

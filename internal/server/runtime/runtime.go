@@ -196,9 +196,9 @@ func (m *Manager) notify(eventType string, data map[string]interface{}) {
 // Start 启动应用
 func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRestart bool, maxRestarts int) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.running {
+		m.mu.Unlock()
 		return fmt.Errorf("application is already running")
 	}
 
@@ -231,6 +231,7 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 	m.logger = NewLogger(m.logDir, appName)
 	if err := m.logger.Start(); err != nil {
 		m.running = false
+		m.mu.Unlock()
 		return fmt.Errorf("failed to start logger: %w", err)
 	}
 
@@ -242,6 +243,7 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 		if stopErr := m.logger.Stop(); stopErr != nil {
 			slog.Warn("failed to stop logger", "error", stopErr)
 		}
+		m.mu.Unlock()
 		return err
 	}
 
@@ -253,15 +255,21 @@ func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRe
 		go m.waitProcess()
 	}
 
-	// 发送启动事件（在goroutine中，避免阻塞）
-	go func() {
-		pid := m.GetPID()
-		logPath := m.GetLogFile()
-		m.notify("start", map[string]interface{}{
-			"pid":     pid,
-			"logPath": logPath,
-		})
-	}()
+	pid := 0
+	if m.cmd != nil && m.cmd.Process != nil {
+		pid = m.cmd.Process.Pid
+	}
+	logPath := ""
+	if m.logger != nil {
+		logPath = m.logger.GetLogFile()
+	}
+	m.mu.Unlock()
+
+	// 启动事件需要在 Start 返回前落到状态层，避免紧跟着的 Stop 把状态回写成 running。
+	m.notify("start", map[string]interface{}{
+		"pid":     pid,
+		"logPath": logPath,
+	})
 
 	return nil
 }
@@ -471,9 +479,22 @@ func (m *Manager) waitProcess() {
 
 		// 进程已退出，更新状态
 		m.mu.Lock()
+		wasRunning := m.running
 		m.running = false
+		m.cmd = nil
+		if m.logger != nil {
+			if err := m.logger.Stop(); err != nil {
+				slog.Warn("failed to stop logger", "error", err)
+			}
+		}
 		slog.Info("process exited", "pid", pid)
 		m.mu.Unlock()
+
+		if wasRunning {
+			m.notify("stop", map[string]interface{}{
+				"pid": pid,
+			})
+		}
 	}
 }
 

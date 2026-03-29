@@ -314,12 +314,32 @@ type stateEventAdapter struct {
 }
 
 func (a *stateEventAdapter) Notify(eventType string, data map[string]interface{}) {
-	// 转换事件类型
-	var pid int
-	if p, ok := data["pid"].(int); ok {
-		pid = p
+	if a.stateNotifier == nil {
+		return
 	}
 
-	// 通知状态系统
+	pid := extractInt(data, "pid")
+	if eventType == "restart" {
+		if newPID := extractInt(data, "new_pid"); newPID != 0 {
+			pid = newPID
+		}
+	}
+
 	a.stateNotifier.OnAppEvent(eventType, a.appName, a.config, pid)
+
+	if logPath, ok := data["logPath"].(string); ok && logPath != "" {
+		a.stateNotifier.OnAppEvent("log_path", a.appName, &ProcessConfig{
+			WorkDir: logPath,
+		}, 0)
+	}
+}
+
+func extractInt(data map[string]interface{}, key string) int {
+	if data == nil {
+		return 0
+	}
+	if value, ok := data[key].(int); ok {
+		return value
+	}
+	return 0
 }

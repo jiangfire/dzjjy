@@ -1,7 +1,7 @@
 # 测试指南
 
-> 文档更新：2026-01-01
-> 优化：移除重复内容，专注于测试实践
+> 文档更新：2026-03-21
+> 说明：移除易过时的静态统计，统一以当前仓库 workflow 和测试命令为准
 
 ## 快速运行
 
@@ -26,20 +26,13 @@ go tool cover -html=coverage.out
 go test -race ./internal/server/...
 ```
 
-## 测试统计
+## 当前测试基线
 
-| 模块 | 用例数 | 覆盖率 | 状态 |
-|------|--------|--------|------|
-| Archive | 18 | 81.1% | ✅ |
-| Auth | 14 | 100% | ✅ |
-| Logger | 57 | 77.3% | ✅ |
-| MultiManager | 9 | 全面 | ⚠️ 1个失败* |
-| Manager | 13 | 全面 | ✅ |
-| State | 8 | 57.0% | ✅ |
-| Client Deploy | 47 | 59.4% | ✅ |
-| **总计** | **166+** | **~70%** | **良好** |
-
-> *注：MultiManager 测试在 Windows 环境下有 1 个测试失败（`TestMultiManager_MultipleApps`），与 `echo` 命令在 Windows 的行为差异有关，不影响核心功能。
+- 本地快速校验：`go test ./...`
+- CI 主校验：`go test -race -coverprofile=coverage.out ./...`
+- 发布前校验：`go test -race ./...`
+- 交叉平台验证：GitHub Actions 会在 Linux、Windows、macOS 上做构建冒烟检查
+- 质量巡检：`Quality` workflow 会额外输出覆盖率摘要并校验 `go.mod` / `go.sum`
 
 ## 测试工具
 
@@ -191,36 +184,37 @@ go test -v -run TestManager_Start ./internal/runtime/...
 ## CI/CD 集成
 
 ```yaml
-# .github/workflows/test.yml
-name: Test
-on: [push, pull_request]
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.25.8'
+          cache: true
 
       - name: Run tests with coverage
         run: |
           go test -race -coverprofile=coverage.out ./...
           go tool cover -html=coverage.out -o coverage.html
 
-      - name: Check coverage threshold
-        run: |
-          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
-          echo "Total coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-            echo "Coverage below 70% threshold"
-            exit 1
-          fi
-
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: actions/upload-artifact@v4
         with:
-          files: ./coverage.out
+          name: coverage-out
+          path: coverage.out
+          retention-days: 7
 ```
 
 ## 测试依赖
@@ -228,8 +222,7 @@ jobs:
 ```go
 // go.mod
 require (
-    github.com/stretchr/testify v1.8.4
-    golang.org/x/sync v0.5.0  // 并发测试辅助
+    github.com/stretchr/testify v1.11.1
 )
 ```
 

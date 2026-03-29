@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/jiangfire/dzjjy/internal/server/archive"
@@ -216,9 +217,11 @@ func (h *Handler) extractDeployParams(w http.ResponseWriter, r *http.Request) (s
 	autoRestart := r.FormValue("auto_restart") == "true"
 	maxRestarts := 0
 	if mr := r.FormValue("max_restarts"); mr != "" {
-		if _, err := fmt.Sscanf(mr, "%d", &maxRestarts); err != nil {
+		parsed, err := strconv.Atoi(strings.TrimSpace(mr))
+		if err != nil {
 			return "", nil, fmt.Errorf("invalid max_restarts: %v", err)
 		}
+		maxRestarts = parsed
 	}
 
 	// 验证配置

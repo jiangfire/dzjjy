@@ -205,6 +205,8 @@ make fmt         # format code
 make ci          # local CI pipeline
 ```
 
+The current GitHub Actions baseline runs CI / Release / Quality workflows with Go `1.25.8`.
+
 Related docs:
 
 - `docs/ARCHITECTURE.md`
