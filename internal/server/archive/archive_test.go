@@ -357,9 +357,7 @@ func TestSafeExtractPath(t *testing.T) {
 			files: map[string]string{
 				"/absolute.txt": "content",
 			},
-			// 注意：在 Windows 上，/absolute.txt 可能被解释为相对路径
-			// 所以这个测试可能不会触发错误
-			expectErr: false, // 调整为不期望错误
+			expectErr: true,
 		},
 	}
 

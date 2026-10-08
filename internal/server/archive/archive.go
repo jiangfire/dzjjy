@@ -58,10 +58,10 @@ func (s *extractionState) addFile(size int64) error {
 
 // safeExtractPath validates an archive entry and returns a path inside destDir.
 func safeExtractPath(destDir, entryPath string) (string, error) {
-	if entryPath == "" || filepath.IsAbs(entryPath) {
+	if entryPath == "" || filepath.IsAbs(entryPath) || strings.HasPrefix(entryPath, "/") {
 		return "", fmt.Errorf("invalid file path: %s (path traversal detected)", entryPath)
-	}
 
+	}
 	absDestDir, err := filepath.Abs(destDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path for dest dir: %w", err)

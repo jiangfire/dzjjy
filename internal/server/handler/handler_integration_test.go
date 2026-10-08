@@ -91,8 +91,8 @@ func main() {
 }
 `)
 
-	deployApp(t, server.URL, "app1", app1Path, "exec", "app1"+execSuffix, "", "", true, 5)
-	deployApp(t, server.URL, "app2", app2Path, "exec", "app2"+execSuffix, "", "", true, 5)
+	deployApp(t, server.URL, "app1", app1Path, "exec", "."+string(os.PathSeparator)+"app1"+execSuffix, "", "", true, 5)
+	deployApp(t, server.URL, "app2", app2Path, "exec", "."+string(os.PathSeparator)+"app2"+execSuffix, "", "", true, 5)
 
 	// 等待应用完全启动
 	time.Sleep(200 * time.Millisecond)
@@ -232,7 +232,7 @@ func main() {
 }
 `)
 
-	deployApp(t, server.URL, "test", appPath, "exec", "test"+execSuffix, "", "", false, 3)
+	deployApp(t, server.URL, "test", appPath, "exec", "."+string(os.PathSeparator)+"test"+execSuffix, "", "", false, 3)
 
 	// 验证应用运行
 	status := getStatus(t, server.URL, "test")
@@ -329,7 +329,7 @@ func main() {
 }
 `)
 
-	deployApp(t, server.URL, "test", appPath, "exec", "test"+execSuffix, "", "", true, 3)
+	deployApp(t, server.URL, "test", appPath, "exec", "."+string(os.PathSeparator)+"test"+execSuffix, "", "", true, 3)
 
 	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/apps/test/remove", nil)
 	require.NoError(t, err)
