@@ -60,7 +60,7 @@ func NewEngineWithRunner(runner Runner) *Engine { return &Engine{runner: runner}
 func (e *Engine) daemonOS(ctx context.Context) (string, error) {
 	output, err := e.runner.Run(ctx, "info", "--format", "{{.OSType}}")
 	if err != nil {
-		return "", fmt.Errorf("Docker Engine unavailable: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("docker engine unavailable: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -106,7 +106,7 @@ func (e *Engine) Start(ctx context.Context, appName string, generation uint64, r
 	}
 	containerID := strings.TrimSpace(string(output))
 	if containerID == "" {
-		return "", fmt.Errorf("Docker returned an empty container ID")
+		return "", fmt.Errorf("docker returned an empty container ID")
 	}
 	if output, err := e.runner.Run(ctx, "start", containerID); err != nil {
 		_, _ = e.runner.Run(ctx, "rm", "-f", containerID)

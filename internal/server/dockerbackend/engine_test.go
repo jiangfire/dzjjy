@@ -64,7 +64,7 @@ func TestStartUsesManagedReadOnlyArtifactMountAndLabels(t *testing.T) {
 func TestDockerUnavailableAndUnsupportedDaemonFailExplicitly(t *testing.T) {
 	unavailable := NewEngineWithRunner(errorRunner{})
 	_, err := unavailable.Start(context.Background(), "demo", 1, "python", "3.12", t.TempDir(), []string{"python", "app.py"})
-	require.ErrorContains(t, err, "Docker Engine unavailable")
+	require.ErrorContains(t, err, "docker engine unavailable")
 	engine := NewEngineWithRunner(&fakeRunner{osType: "windows"})
 	_, err = engine.Start(context.Background(), "demo", 1, "python", "3.12", t.TempDir(), []string{"python", "app.py"})
 	require.ErrorContains(t, err, "does not support Docker OS")

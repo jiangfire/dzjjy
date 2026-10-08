@@ -211,7 +211,7 @@ func extractTarReader(reader *tar.Reader, destDir string, state *extractionState
 			if err := os.MkdirAll(destPath, 0750); err != nil {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := state.reserveFile(header.Size); err != nil {
 				return fmt.Errorf("archive entry %q: %w", header.Name, err)
 			}

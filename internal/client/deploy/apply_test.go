@@ -17,7 +17,7 @@ func TestApplyConfigPostsYAMLAndArtifact(t *testing.T) {
 		require.Contains(t, r.FormValue("config"), "kind: StaticSite")
 		file, header, err := r.FormFile("artifact")
 		require.NoError(t, err)
-		defer file.Close()
+		require.NoError(t, file.Close())
 		require.Equal(t, "site.zip", header.Filename)
 		_, _ = w.Write([]byte(`{"success":true,"message":"ok"}`))
 	}))

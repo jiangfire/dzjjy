@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 type Site struct {
@@ -101,12 +100,4 @@ func (s *Site) serveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 	http.ServeContent(w, r, filepath.Base(resolvedPath), info.ModTime(), file)
-}
-
-func infoModTime(path string) (modTime time.Time) {
-	info, err := os.Stat(path)
-	if err == nil {
-		return info.ModTime()
-	}
-	return time.Time{}
 }

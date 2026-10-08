@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -88,10 +87,4 @@ func TestApplyDockerUsesManagedTemplateAndStopCleansContainer(t *testing.T) {
 	require.Equal(t, []string{"inspect", "stop", "rm"}, stopCalls)
 	require.Equal(t, state.StatusStopped, h.GetStateSnapshot()["docker-app"].Status)
 	require.NoError(t, h.Shutdown())
-}
-
-type failingDockerRunner struct{}
-
-func (failingDockerRunner) Run(context.Context, ...string) ([]byte, error) {
-	return nil, errors.New("missing")
 }
