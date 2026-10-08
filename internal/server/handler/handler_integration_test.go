@@ -265,7 +265,7 @@ func main() {
 
 	testApp := apps["test"].(map[string]interface{})
 	assert.Equal(t, "stopped", testApp["status"])
-	assert.Equal(t, float64(0), testApp["pid"])
+	assert.NotContains(t, testApp, "pid")
 
 	h2 := handler.NewHandlerWithState(workDir, workDir, logDir, stateFile)
 	require.NoError(t, h2.RestoreState())
