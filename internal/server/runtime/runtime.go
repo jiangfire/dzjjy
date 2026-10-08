@@ -134,13 +134,10 @@ func (m *Manager) Restore(config *ProcessConfig, pid int, startTimeUnix int64, r
 
 	if config != nil {
 		m.config = &ProcessConfig{
-			Type:        config.Type,
-			WorkDir:     config.WorkDir,
-			Executable:  config.Executable,
-			Entry:       config.Entry,
-			Args:        config.Args,
-			AutoRestart: config.AutoRestart,
-			MaxRestarts: config.MaxRestarts,
+			Type: config.Type, WorkDir: config.WorkDir, Executable: config.Executable,
+			Entry: config.Entry, Args: config.Args,
+			Command:     append([]string(nil), config.Command...),
+			AutoRestart: config.AutoRestart, MaxRestarts: config.MaxRestarts,
 		}
 	}
 
@@ -195,30 +192,28 @@ func (m *Manager) notify(eventType string, data map[string]interface{}) {
 
 // Start 启动应用
 func (m *Manager) Start(appType, workDir, executable, entry, args string, autoRestart bool, maxRestarts int) error {
-	m.mu.Lock()
+	return m.StartWithConfig(&ProcessConfig{
+		Type: appType, WorkDir: workDir, Executable: executable, Entry: entry,
+		Args: args, AutoRestart: autoRestart, MaxRestarts: maxRestarts,
+	})
+}
 
+// StartWithConfig starts a process using the complete argument-array config.
+func (m *Manager) StartWithConfig(config *ProcessConfig) error {
+	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
 		return fmt.Errorf("application is already running")
 	}
-
-	// 验证类型
-	if appType != TypeExec && appType != TypeRuntime {
-		return fmt.Errorf("invalid type: %s (must be 'exec' or 'runtime')", appType)
+	if config.Type != TypeExec && config.Type != TypeRuntime {
+		m.mu.Unlock()
+		return fmt.Errorf("invalid type: %s (must be 'exec' or 'runtime')", config.Type)
 	}
-
-	// 保存配置
-	m.config = &ProcessConfig{
-		Type:        appType,
-		WorkDir:     workDir,
-		Executable:  executable,
-		Entry:       entry,
-		Args:        args,
-		AutoRestart: autoRestart,
-		MaxRestarts: maxRestarts,
-	}
-
-	// 创建上下文
+	configCopy := *config
+	configCopy.Command = append([]string(nil), config.Command...)
+	m.config = &configCopy
+	appType, executable, entry := config.Type, config.Executable, config.Entry
+	autoRestart := config.AutoRestart
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.restartCount = 0
 	m.running = true
@@ -280,37 +275,35 @@ func (m *Manager) startProcess() error {
 
 	switch m.config.Type {
 	case TypeExec:
-		// 可执行程序：直接运行
-		if m.config.Executable == "" {
+		executablePath := m.config.Executable
+		command := m.config.Command
+		if len(command) > 0 {
+			executablePath = command[0]
+			command = command[1:]
+		} else if executablePath == "" {
 			return fmt.Errorf("executable is required for exec type")
 		}
-
-		// 解析可执行文件路径
-		// TypeExec 的可执行文件应该在工作目录中
-		executablePath := m.config.Executable
-		if !filepath.IsAbs(executablePath) {
+		if !isValidExecutable(executablePath) {
+			return fmt.Errorf("invalid executable path: %s", executablePath)
+		}
+		if !filepath.IsAbs(executablePath) && strings.ContainsAny(executablePath, `/\\`) {
 			executablePath = filepath.Join(m.config.WorkDir, executablePath)
 		}
-
-		// 验证原始路径（防止注入）
-		if !isValidExecutable(m.config.Executable) {
-			return fmt.Errorf("invalid executable path: %s", m.config.Executable)
-		}
-
-		// 验证最终路径（防止遍历）
 		if !isValidExecutable(executablePath) {
 			return fmt.Errorf("invalid executable path after resolution: %s", executablePath)
 		}
-
-		if m.config.Args != "" {
-			argList := strings.Fields(m.config.Args)
-			cmd = exec.CommandContext(m.ctx, executablePath, argList...) // #nosec G204 - validated above
+		if len(m.config.Command) > 0 {
+			if os.PathSeparator == '\\' && (strings.EqualFold(filepath.Ext(executablePath), ".bat") || strings.EqualFold(filepath.Ext(executablePath), ".cmd")) {
+				cmd = exec.CommandContext(m.ctx, "cmd.exe", append([]string{"/C", executablePath}, command...)...)
+			} else {
+				cmd = exec.CommandContext(m.ctx, executablePath, command...)
+			}
+		} else if m.config.Args != "" {
+			cmd = exec.CommandContext(m.ctx, executablePath, strings.Fields(m.config.Args)...)
 		} else {
-			cmd = exec.CommandContext(m.ctx, executablePath) // #nosec G204 - validated above
+			cmd = exec.CommandContext(m.ctx, executablePath)
 		}
-
 	case TypeRuntime:
-		// 需要运行时：运行时命令 + 入口文件 + 应用参数
 		// entry 可以包含多个参数，如 "-jar app.jar" 或 "-m module"
 		if m.config.Executable == "" || m.config.Entry == "" {
 			return fmt.Errorf("executable and entry are required for runtime type")
@@ -655,13 +648,10 @@ func (m *Manager) GetConfig() *ProcessConfig {
 
 	// 返回配置的副本
 	return &ProcessConfig{
-		Type:        m.config.Type,
-		WorkDir:     m.config.WorkDir,
-		Executable:  m.config.Executable,
-		Entry:       m.config.Entry,
-		Args:        m.config.Args,
-		AutoRestart: m.config.AutoRestart,
-		MaxRestarts: m.config.MaxRestarts,
+		Type: m.config.Type, WorkDir: m.config.WorkDir, Executable: m.config.Executable,
+		Entry: m.config.Entry, Args: m.config.Args,
+		Command:     append([]string(nil), m.config.Command...),
+		AutoRestart: m.config.AutoRestart, MaxRestarts: m.config.MaxRestarts,
 	}
 }
 

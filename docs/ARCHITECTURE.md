@@ -161,3 +161,15 @@ func isValidExecutable(path string) bool {
 | **日志保留** | 内存 1000 行，文件支持轮转 |
 | **重启延迟** | 固定 1 秒，防止快速失败循环 |
 | **提取方式** | 文件直接解压到应用工作目录根部 |
+
+## 声明式应用与运行后端（Phase 0–2）
+
+`dzjjy/v1` 配置由 `appconfig` 严格解析，拒绝未知字段及多个 YAML 文档。`App` 使用 `spec.command` 参数数组；`StaticSite` 使用独立 HTTP listener，可指定端口或设置 `0` 自动分配，并提供 SPA fallback。`dzjjy-client validate -file` 仅校验；`apply -file` 上传 YAML 和相对 YAML 路径解析的 artifact。
+
+Apply 先在独立 staging 目录解包和校验，再激活 artifact。相同 desired config 重复 apply 保持 generation 与运行实例；运行时配置变化返回冲突，需先停止再 apply。应用状态保存 backend、desired config、generation、端口/容器 ID 和绝对过期时间；TTL callback 校验 generation，服务重启时按剩余 TTL 重建调度。
+
+`process` backend 直接以服务端用户权限启动进程，**不是安全沙箱**，只适用于可信代码。`docker` backend 仅允许平台维护的 Python 3.12、Node 22、Go 1.24 templates，要求 Linux Docker daemon；workspace 只读挂载且禁止 Docker socket、任意镜像、Dockerfile、自定义 Docker 参数与宿主路径。Docker 不可用时 apply 明确失败，不降级为 process。
+
+Phase 3（闲置暂停、临时 URL、网络/端口映射、Secret、volume、资源配额、gVisor/runsc、Kubernetes 导入）不在当前实现范围内。
+
+进程状态恢复目前使用 PID 存在性检查；`ProcessStartID` 尚未接入验证，不能完全防御 PID reuse。进程树回收也尚未提供跨平台保证；部署可信进程并为任务配置外层系统级清理策略。

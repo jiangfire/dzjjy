@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jiangfire/dzjjy/internal/server/auth"
@@ -102,9 +105,28 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("server failed", "error", err)
-		os.Exit(1)
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			slog.Error("server failed", "error", err)
+			_ = h.Shutdown()
+			os.Exit(1)
+		}
+	case sig := <-signals:
+		slog.Info("shutdown signal received", "signal", sig.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(ctx); err != nil {
+			slog.Warn("HTTP server shutdown failed", "error", err)
+		}
+		cancel()
+		if err := h.Shutdown(); err != nil {
+			slog.Warn("application shutdown failed", "error", err)
+		}
 	}
 }
 
@@ -148,10 +170,11 @@ func createMultiAppHandler(h *handler.Handler) http.HandlerFunc {
 
 		// 临时修改路径供 handler 使用
 		r.URL.Path = "/api/v1/apps/" + appName + "/" + action
-
 		switch action {
 		case "deploy":
 			h.Deploy(w, r)
+		case "apply":
+			h.Apply(w, r)
 		case "stop":
 			h.Stop(w, r)
 		case "start":

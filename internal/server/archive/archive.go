@@ -12,283 +12,293 @@ import (
 	"strings"
 )
 
-// safeExtractPath 验证并返回安全的解压路径
+// Limits bounds both archive metadata and the bytes actually expanded.
+type Limits struct {
+	MaxFileSize  int64
+	MaxTotalSize int64
+	MaxFiles     int
+}
+
+var DefaultLimits = Limits{
+	MaxFileSize:  100 << 20,
+	MaxTotalSize: 1 << 30,
+	MaxFiles:     10000,
+}
+
+type extractionState struct {
+	limits Limits
+	files  int
+	total  int64
+}
+
+func (s *extractionState) reserveFile(size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid archive entry size: %d", size)
+	}
+	if s.limits.MaxFiles > 0 && s.files >= s.limits.MaxFiles {
+		return fmt.Errorf("file count limit exceeded: maximum %d files", s.limits.MaxFiles)
+	}
+	if s.limits.MaxFileSize > 0 && size > s.limits.MaxFileSize {
+		return fmt.Errorf("file size limit exceeded: maximum %d bytes", s.limits.MaxFileSize)
+	}
+	if s.limits.MaxTotalSize > 0 && size > s.limits.MaxTotalSize-s.total {
+		return fmt.Errorf("total expanded size limit exceeded: maximum %d bytes", s.limits.MaxTotalSize)
+	}
+	return nil
+}
+
+func (s *extractionState) addFile(size int64) error {
+	if err := s.reserveFile(size); err != nil {
+		return err
+	}
+	s.files++
+	s.total += size
+	return nil
+}
+
+// safeExtractPath validates an archive entry and returns a path inside destDir.
 func safeExtractPath(destDir, entryPath string) (string, error) {
-	// 获取目标目录的绝对路径
+	if entryPath == "" || filepath.IsAbs(entryPath) {
+		return "", fmt.Errorf("invalid file path: %s (path traversal detected)", entryPath)
+	}
+
 	absDestDir, err := filepath.Abs(destDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path for dest dir: %w", err)
 	}
-
-	// 构建完整的目标路径
-	destPath := filepath.Join(destDir, entryPath)
-
-	// 获取目标路径的绝对路径
+	destPath := filepath.Join(destDir, filepath.FromSlash(entryPath))
 	absDestPath, err := filepath.Abs(destPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
-
-	// 验证目标路径在目标目录内
-	if !strings.HasPrefix(absDestPath, absDestDir+string(os.PathSeparator)) {
+	if absDestPath != absDestDir && !strings.HasPrefix(absDestPath, absDestDir+string(os.PathSeparator)) {
 		return "", fmt.Errorf("invalid file path: %s (path traversal detected)", entryPath)
 	}
 
-	// 检查符号链接（防止通过符号链接逃逸）
-	if info, err := os.Lstat(destPath); err == nil && info.Mode()&os.ModeSymlink != 0 { // #nosec G703 - destPath is validated to stay under destDir
-		return "", fmt.Errorf("symbolic links not allowed: %s", entryPath)
+	// Reject symlinks in the existing destination path and its parents.
+	current := absDestPath
+	for current != absDestDir {
+		info, statErr := os.Lstat(current)
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("symbolic links not allowed: %s", entryPath)
+		}
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("failed to inspect destination path: %w", statErr)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
 	}
-
 	return destPath, nil
 }
 
-// Extract 解压缩文件到指定目录
+// Extract extracts an archive using conservative default limits.
 func Extract(archivePath, destDir string) error {
-	ext := strings.ToLower(filepath.Ext(archivePath))
+	return ExtractWithLimits(archivePath, destDir, DefaultLimits)
+}
 
-	slog.Info("extracting archive",
-		"file", archivePath,
-		"dest", destDir,
-		"type", ext,
-	)
+// ExtractWithLimits extracts an archive while enforcing per-file, total-size,
+// and file-count limits. A limit of zero disables that individual limit.
+func ExtractWithLimits(archivePath, destDir string, limits Limits) error {
+	ext := strings.ToLower(filepath.Ext(archivePath))
+	state := &extractionState{limits: limits}
+	slog.Info("extracting archive", "file", archivePath, "dest", destDir, "type", ext)
 
 	switch ext {
 	case ".zip":
-		return extractZip(archivePath, destDir)
+		return extractZip(archivePath, destDir, state)
 	case ".gz":
-		// 检查是否是 .tar.gz
 		if strings.HasSuffix(strings.ToLower(archivePath), ".tar.gz") {
-			return extractTarGz(archivePath, destDir)
+			return extractTarGz(archivePath, destDir, state)
 		}
-		return extractGzip(archivePath, destDir)
+		return extractGzip(archivePath, destDir, state)
 	case ".tar":
-		return extractTar(archivePath, destDir)
+		return extractTar(archivePath, destDir, state)
 	default:
 		return fmt.Errorf("unsupported archive format: %s", ext)
 	}
 }
 
-// extractZip 解压 ZIP 文件
-func extractZip(archivePath, destDir string) error {
+func extractZip(archivePath, destDir string, state *extractionState) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("failed to open zip: %w", err)
 	}
 	defer func() { _ = r.Close() }()
 
-	var invalidPaths []string
-	successCount := 0
-
-	for _, f := range r.File {
-		err := extractZipFile(f, destDir)
+	for _, entry := range r.File {
+		destPath, err := safeExtractPath(destDir, entry.Name)
 		if err != nil {
-			// 检查是否是路径遍历错误
-			if strings.Contains(err.Error(), "path traversal") {
-				invalidPaths = append(invalidPaths, f.Name)
-				slog.Warn("skipping invalid path", "path", f.Name, "error", err)
-				continue
-			}
 			return err
 		}
-		successCount++
+		if entry.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0750); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+			continue
+		}
+		if err := state.reserveFile(int64(entry.UncompressedSize64)); err != nil {
+			return fmt.Errorf("archive entry %q: %w", entry.Name, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 - path validated above
+		if err != nil {
+			return fmt.Errorf("failed to create file: %w", err)
+		}
+		src, err := entry.Open()
+		if err != nil {
+			_ = file.Close()
+			return fmt.Errorf("failed to open zip file: %w", err)
+		}
+		n, copyErr := copyLimited(file, src, state.limits.MaxFileSize)
+		_ = src.Close()
+		closeErr := file.Close()
+		if copyErr != nil {
+			return fmt.Errorf("archive entry %q: %w", entry.Name, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("failed to close file: %w", closeErr)
+		}
+		if err := state.addFile(n); err != nil {
+			return fmt.Errorf("archive entry %q: %w", entry.Name, err)
+		}
 	}
-
-	// 如果有无效路径，返回警告信息
-	if len(invalidPaths) > 0 {
-		return fmt.Errorf("extraction completed with %d invalid paths (path traversal detected): %v", len(invalidPaths), invalidPaths)
-	}
-
-	slog.Info("zip extraction completed", "files", successCount)
 	return nil
 }
 
-// extractZipFile 解压单个 ZIP 文件
-func extractZipFile(f *zip.File, destDir string) error {
-	// 使用安全路径验证
-	destPath, err := safeExtractPath(destDir, f.Name)
-	if err != nil {
-		return err
-	}
-
-	// 如果是目录
-	if f.FileInfo().IsDir() {
-		return os.MkdirAll(destPath, f.Mode())
-	}
-
-	// 创建父目录
-	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// 创建文件
-	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode()) // #nosec G304 - path validated by safeExtractPath
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer func() { _ = destFile.Close() }()
-
-	// 打开源文件
-	srcFile, err := f.Open()
-	if err != nil {
-		return fmt.Errorf("failed to open zip file: %w", err)
-	}
-	defer func() { _ = srcFile.Close() }()
-
-	// 复制内容（限制大小防止解压炸弹）
-	limitedReader := io.LimitReader(srcFile, 100*1024*1024)     // 100MB limit
-	if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
-		return fmt.Errorf("failed to copy file: %w", err)
-	}
-
-	return nil
-}
-
-// extractTarGz 解压 .tar.gz 文件
-func extractTarGz(archivePath, destDir string) error {
-	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
+func extractTarGz(archivePath, destDir string, state *extractionState) error {
+	file, err := os.Open(archivePath) // #nosec G304 - caller supplied archive path
 	if err != nil {
 		return fmt.Errorf("failed to open tar.gz: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-
-	gzr, err := gzip.NewReader(file)
+	reader, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer func() { _ = gzr.Close() }()
-
-	return extractTarReader(tar.NewReader(gzr), destDir)
+	defer func() { _ = reader.Close() }()
+	return extractTarReader(tar.NewReader(reader), destDir, state)
 }
 
-// extractTar 解压 .tar 文件
-func extractTar(archivePath, destDir string) error {
-	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
+func extractTar(archivePath, destDir string, state *extractionState) error {
+	file, err := os.Open(archivePath) // #nosec G304 - caller supplied archive path
 	if err != nil {
 		return fmt.Errorf("failed to open tar: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-
-	return extractTarReader(tar.NewReader(file), destDir)
+	return extractTarReader(tar.NewReader(file), destDir, state)
 }
 
-// extractTarReader 从 tar.Reader 解压文件
-func extractTarReader(tr *tar.Reader, destDir string) error {
-	count := 0
-	var invalidPaths []string
-
+func extractTarReader(reader *tar.Reader, destDir string, state *extractionState) error {
 	for {
-		header, err := tr.Next()
+		header, err := reader.Next()
 		if err == io.EOF {
-			break
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("failed to read tar: %w", err)
 		}
-
-		// 使用安全路径验证
 		destPath, err := safeExtractPath(destDir, header.Name)
 		if err != nil {
-			invalidPaths = append(invalidPaths, header.Name)
-			slog.Warn("skipping invalid path", "path", header.Name, "error", err) // #nosec G706 - archive entry names are operational diagnostics
-			continue
+			return err
 		}
-
 		switch header.Typeflag {
 		case tar.TypeDir:
-			// 创建目录
-			mode := header.Mode
-			if mode < 0 || mode > 07777 {
-				return fmt.Errorf("invalid file mode: %d", mode)
-			}
-			if err := os.MkdirAll(destPath, os.FileMode(mode)); err != nil { // #nosec G703 - destPath is validated by safeExtractPath
+			if err := os.MkdirAll(destPath, 0750); err != nil {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
-
-		case tar.TypeReg:
-			// 创建父目录
-			if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil { // #nosec G703 - destPath is validated by safeExtractPath
+		case tar.TypeReg, tar.TypeRegA:
+			if err := state.reserveFile(header.Size); err != nil {
+				return fmt.Errorf("archive entry %q: %w", header.Name, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
-
-			// 创建文件
-			mode := header.Mode
-			if mode < 0 || mode > 07777 {
-				return fmt.Errorf("invalid file mode: %d", mode)
-			}
-			destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode)) // #nosec G304,G703 - path validated by safeExtractPath
+			file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 - path validated above
 			if err != nil {
 				return fmt.Errorf("failed to create file: %w", err)
 			}
-
-			// 复制内容（限制大小防止解压炸弹）
-			limitedReader := io.LimitReader(tr, 100*1024*1024)          // 100MB limit
-			if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
-				_ = destFile.Close() // ignore close error in error path
-				return fmt.Errorf("failed to copy file: %w", err)
+			n, copyErr := copyLimited(file, reader, state.limits.MaxFileSize)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return fmt.Errorf("archive entry %q: %w", header.Name, copyErr)
 			}
-			if err := destFile.Close(); err != nil {
-				return fmt.Errorf("failed to close file: %w", err)
+			if closeErr != nil {
+				return fmt.Errorf("failed to close file: %w", closeErr)
 			}
-			count++
-
+			if n != header.Size {
+				return fmt.Errorf("archive entry %q: truncated content: expected %d bytes, read %d", header.Name, header.Size, n)
+			}
+			if err := state.addFile(n); err != nil {
+				return fmt.Errorf("archive entry %q: %w", header.Name, err)
+			}
 		default:
-			// #nosec G706 - archive entry names are operational diagnostics
-			slog.Warn("skipping unsupported file type",
-				"name", header.Name,
-				"type", header.Typeflag,
-			)
+			return fmt.Errorf("unsupported archive entry type %q: %s", header.Typeflag, header.Name)
 		}
 	}
-
-	// 如果有无效路径，返回警告信息
-	if len(invalidPaths) > 0 {
-		return fmt.Errorf("extraction completed with %d invalid paths (path traversal detected): %v", len(invalidPaths), invalidPaths)
-	}
-
-	slog.Info("tar extraction completed", "files", count)
-	return nil
 }
 
-// extractGzip 解压单个 .gz 文件
-func extractGzip(archivePath, destDir string) error {
-	file, err := os.Open(archivePath) // #nosec G304 - archivePath is validated by Extract function
+func extractGzip(archivePath, destDir string, state *extractionState) error {
+	file, err := os.Open(archivePath) // #nosec G304 - caller supplied archive path
 	if err != nil {
 		return fmt.Errorf("failed to open gzip: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-
-	gzr, err := gzip.NewReader(file)
+	reader, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer func() { _ = gzr.Close() }()
+	defer func() { _ = reader.Close() }()
 
-	// 目标文件名（去掉 .gz 扩展名）
 	entryPath := strings.TrimSuffix(filepath.Base(archivePath), ".gz")
-
-	// 使用安全路径验证
 	destPath, err := safeExtractPath(destDir, entryPath)
 	if err != nil {
 		return err
 	}
-
-	destFile, err := os.Create(destPath) // #nosec G304 - path validated by safeExtractPath
+	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if state.limits.MaxFiles > 0 && state.limits.MaxFiles < 1 {
+		return fmt.Errorf("file count limit exceeded: maximum %d files", state.limits.MaxFiles)
+	}
+	fileOut, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 - path validated above
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer func() { _ = destFile.Close() }()
-
-	// 复制内容（限制大小防止解压炸弹）
-	limitedReader := io.LimitReader(gzr, 100*1024*1024)         // 100MB limit
-	if _, err := io.Copy(destFile, limitedReader); err != nil { // #nosec G110 - limited to 100MB
-		return fmt.Errorf("failed to copy file: %w", err)
+	n, copyErr := copyLimited(fileOut, reader, state.limits.MaxFileSize)
+	closeErr := fileOut.Close()
+	if copyErr != nil {
+		return copyErr
 	}
-
-	slog.Info("gzip extraction completed", "file", destPath)
+	if closeErr != nil {
+		return fmt.Errorf("failed to close file: %w", closeErr)
+	}
+	if err := state.addFile(n); err != nil {
+		return err
+	}
 	return nil
 }
 
-// IsArchive 检查文件是否是支持的压缩格式
+func copyLimited(dst io.Writer, src io.Reader, max int64) (int64, error) {
+	if max <= 0 {
+		return io.Copy(dst, src)
+	}
+	limited := io.LimitReader(src, max+1)
+	n, err := io.Copy(dst, limited)
+	if err != nil {
+		return n, fmt.Errorf("failed to copy file: %w", err)
+	}
+	if n > max {
+		return n, fmt.Errorf("file size limit exceeded: maximum %d bytes", max)
+	}
+	return n, nil
+}
+
+// IsArchive reports whether filename uses a supported archive suffix.
 func IsArchive(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {

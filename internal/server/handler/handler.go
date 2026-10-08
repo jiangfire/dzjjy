@@ -11,43 +11,49 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jiangfire/dzjjy/internal/server/archive"
+	"github.com/jiangfire/dzjjy/internal/server/dockerbackend"
 	"github.com/jiangfire/dzjjy/internal/server/runtime"
 	"github.com/jiangfire/dzjjy/internal/server/state"
+	"github.com/jiangfire/dzjjy/internal/server/staticserve"
+	"github.com/jiangfire/dzjjy/internal/server/ttl"
 	"github.com/jiangfire/dzjjy/pkg/api"
 )
 
-// Handler HTTP处理器（支持多应用）
 type Handler struct {
-	multiManager *runtime.MultiManager // 多应用管理器
+	multiManager *runtime.MultiManager
 	uploadDir    string
 	workDir      string
 	logDir       string
-	stateStore   *state.StateStore     // 状态存储
-	syncManager  *state.SyncManager    // 状态同步器
-	restoreMgr   *state.RestoreManager // 恢复管理器
+	stateStore   *state.StateStore
+	syncManager  *state.SyncManager
+	restoreMgr   *state.RestoreManager
+	sitesMu      sync.Mutex
+	sites        map[string]*staticserve.Site
+	ttlScheduler *ttl.Scheduler
+	dockerEngine *dockerbackend.Engine
+	dockerMu     sync.Mutex
+	dockerApps   map[string]dockerAppRecord
 }
 
 // NewHandler 创建处理器（不带状态持久化）
 func NewHandler(uploadDir, workDir, logDir string) *Handler {
 	return &Handler{
-		multiManager: runtime.NewMultiManager(logDir),
-		uploadDir:    uploadDir,
-		workDir:      workDir,
-		logDir:       logDir,
+		multiManager: runtime.NewMultiManager(logDir), uploadDir: uploadDir,
+		workDir: workDir, logDir: logDir, sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
+		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
 	}
 }
 
 // NewHandlerWithState 创建支持状态持久化的处理器
 func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler {
 	h := &Handler{
-		uploadDir: uploadDir,
-		workDir:   workDir,
-		logDir:    logDir,
+		uploadDir: uploadDir, workDir: workDir, logDir: logDir,
+		sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
+		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
 	}
-
-	// 初始化状态持久化组件
 	h.stateStore = state.NewStateStore(stateFile)
 	h.syncManager = state.NewSyncManager(h.stateStore)
 	h.restoreMgr = state.NewRestoreManager(h.stateStore, h.syncManager)
@@ -91,11 +97,15 @@ func (h *Handler) RestoreState() error {
 		slog.Warn("cleanup failed", "error", err)
 	}
 
-	// 3. 从 syncManager 获取状态，先恢复到内存管理器，再决定是否自动重启
 	stateData := h.syncManager.GetState()
+	h.restoreDockerApps(stateData)
+	h.restoreStaticSites(stateData)
 	ctx := context.Background()
 
 	for appName, appState := range stateData.Apps {
+		if appState.Backend == "static" || appState.Backend == "docker" {
+			continue
+		}
 		if appState.Config != nil {
 			if err := h.multiManager.RestoreApp(
 				appName,
@@ -477,7 +487,6 @@ func (h *Handler) registerApp(appName string, config *runtime.ProcessConfig) {
 	})
 }
 
-// persistState 触发状态持久化
 func (h *Handler) persistState() {
 	if h.syncManager != nil {
 		if err := h.syncManager.ManualPersist(); err != nil {
@@ -492,18 +501,38 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	appName := h.getAppNameWithDefault(r)
 	if err := validateAppName(appName); err != nil {
 		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
+	if stopped, err := h.stopDockerApp(appName, "manual_stop", false); stopped {
+		if err != nil {
+			h.sendError(w, fmt.Sprintf("failed to stop Docker app: %v", err), http.StatusInternalServerError)
+			return
+		}
+		h.sendSuccess(w, "application stopped", map[string]any{"app_name": appName})
+		return
+	} else if err != nil {
+		h.sendError(w, fmt.Sprintf("failed to stop Docker app: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if stopped, err := h.closeStaticSite(appName, false); stopped {
+		if err != nil {
+			h.sendError(w, fmt.Sprintf("failed to stop static site: %v", err), http.StatusInternalServerError)
+			return
+		}
+		h.markStaticStopped(appName, "manual_stop")
+		h.sendSuccess(w, "application stopped", map[string]any{"app_name": appName})
+		return
+	} else if err != nil {
+		h.sendError(w, fmt.Sprintf("failed to stop static site: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.multiManager.StopApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
 		return
 	}
-
 	h.persistState()
 	h.sendSuccess(w, "application stopped", map[string]any{"app_name": appName})
 }
@@ -612,31 +641,38 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	appName := h.getAppNameWithDefault(r)
 	if err := validateAppName(appName); err != nil {
 		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
+	h.sitesMu.Lock()
+	site, isSite := h.sites[appName]
+	h.sitesMu.Unlock()
+	if isSite {
+		h.sendSuccess(w, "ok", map[string]any{"app_name": appName, "running": true, "type": "static", "port": site.Port()})
+		return
+	}
 	info, exists := h.multiManager.GetAppInfo(appName)
 	if !exists {
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[appName]; app != nil && (app.Backend == "static" || app.Backend == "docker") {
+				h.sendSuccess(w, "ok", map[string]any{
+					"app_name": appName, "running": app.Status == state.StatusRunning, "type": app.Backend,
+					"port": app.Port, "container_id": app.ContainerID, "status": app.Status,
+					"termination_reason": app.TerminationReason,
+				})
+				return
+			}
+		}
 		h.sendError(w, "app not found", http.StatusNotFound)
 		return
 	}
-
 	status := api.StatusResponse{
-		Running:      info.Running,
-		PID:          info.PID,
-		Type:         info.Type,
-		Executable:   info.Executable,
-		Entry:        info.Entry,
-		AutoRestart:  info.AutoRestart,
-		RestartCount: info.RestartCount,
-		Uptime:       info.Uptime,
-		AppName:      appName,
+		Running: info.Running, PID: info.PID, Type: info.Type, Executable: info.Executable,
+		Entry: info.Entry, AutoRestart: info.AutoRestart, RestartCount: info.RestartCount,
+		Uptime: info.Uptime, AppName: appName,
 	}
-
 	h.sendSuccess(w, "ok", status)
 }
 
@@ -715,51 +751,65 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 // RemoveApp 删除应用（停止并清理）
+// RemoveApp 删除应用（停止并清理）
 func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	appName := h.getAppNameWithDefault(r)
 	if err := validateAppName(appName); err != nil {
 		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// 停止应用
-	if err := h.multiManager.StopApp(appName); err != nil {
-		// 如果应用不存在，也返回成功（幂等性）
-		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no running application") {
-			h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
+	if removed, err := h.stopDockerApp(appName, "manual_remove", true); removed {
+		if err != nil {
+			h.sendError(w, fmt.Sprintf("failed to remove Docker app: %v", err), http.StatusInternalServerError)
 			return
 		}
+		if h.syncManager != nil {
+			h.syncManager.OnAppEvent(state.AppEvent{Type: "deregister", AppName: appName})
+			h.persistState()
+		}
+		h.sendSuccess(w, "application removed", map[string]any{"app_name": appName})
+		return
+	} else if err != nil {
+		h.sendError(w, fmt.Sprintf("failed to remove Docker app: %v", err), http.StatusInternalServerError)
+		return
 	}
-
+	if removed, err := h.closeStaticSite(appName, true); removed {
+		if err != nil {
+			h.sendError(w, fmt.Sprintf("failed to remove static site: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if h.syncManager != nil {
+			h.syncManager.OnAppEvent(state.AppEvent{Type: "deregister", AppName: appName})
+			h.persistState()
+		}
+		h.sendSuccess(w, "application removed", map[string]any{"app_name": appName})
+		return
+	} else if err != nil {
+		h.sendError(w, fmt.Sprintf("failed to remove static site: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if err := h.multiManager.StopApp(appName); err != nil && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no running application") {
+		h.sendError(w, fmt.Sprintf("failed to stop: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err := h.multiManager.RemoveApp(appName); err != nil && !strings.Contains(err.Error(), "not found") {
 		h.sendError(w, fmt.Sprintf("failed to remove runtime state: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	// 清理工作目录
-	appWorkDir := filepath.Join(h.workDir, appName)
-	if err := os.RemoveAll(appWorkDir); err != nil { // #nosec G703 - appName is validated by validateAppName
+	if err := os.RemoveAll(filepath.Join(h.workDir, appName)); err != nil {
 		slog.Warn("failed to remove work dir", "error", err)
 	}
-	appUploadDir := filepath.Join(h.uploadDir, appName)
-	if err := os.RemoveAll(appUploadDir); err != nil { // #nosec G703 - appName is validated by validateAppName
+	if err := os.RemoveAll(filepath.Join(h.uploadDir, appName)); err != nil {
 		slog.Warn("failed to remove upload dir", "error", err)
 	}
-
-	// 从状态管理器移除
 	if h.syncManager != nil {
-		h.syncManager.OnAppEvent(state.AppEvent{
-			Type:    "deregister",
-			AppName: appName,
-		})
+		h.syncManager.OnAppEvent(state.AppEvent{Type: "deregister", AppName: appName})
 		h.persistState()
 	}
-
 	h.sendSuccess(w, "application removed", map[string]any{"app_name": appName})
 }
 

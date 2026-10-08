@@ -1,37 +1,35 @@
 package api
 
-// ProcessConfig 进程配置（公共类型，供runtime和state包使用）
-// 遵循DRY原则，消除重复定义
+// ProcessConfig configures a managed process while retaining legacy string args.
 type ProcessConfig struct {
-	Type        string `json:"type"`         // exec 或 runtime
-	WorkDir     string `json:"work_dir"`     // 工作目录
-	Executable  string `json:"executable"`   // 可执行程序
-	Entry       string `json:"entry"`        // 入口文件
-	Args        string `json:"args"`         // 启动参数
-	AutoRestart bool   `json:"auto_restart"` // 自动重启
-	MaxRestarts int    `json:"max_restarts"` // 最大重启次数
+	Type        string   `json:"type"`
+	WorkDir     string   `json:"work_dir"`
+	Executable  string   `json:"executable"`
+	Entry       string   `json:"entry"`
+	Args        string   `json:"args"`
+	Command     []string `json:"command,omitempty"`
+	AutoRestart bool     `json:"auto_restart"`
+	MaxRestarts int      `json:"max_restarts"`
 }
 
-// DeployRequest 部署请求
+// DeployRequest is the legacy process deploy request.
 type DeployRequest struct {
-	Type        string `json:"type"`         // exec: 可执行程序, runtime: 需要运行时
-	Executable  string `json:"executable"`   // 可执行程序路径或运行时命令
-	Entry       string `json:"entry"`        // 入口文件（runtime类型需要）
-	Args        string `json:"args"`         // 启动参数
-	AutoRestart bool   `json:"auto_restart"` // 是否自动重启
-	MaxRestarts int    `json:"max_restarts"` // 最大重启次数，0表示无限制
+	Type        string `json:"type"`
+	Executable  string `json:"executable"`
+	Entry       string `json:"entry"`
+	Args        string `json:"args"`
+	AutoRestart bool   `json:"auto_restart"`
+	MaxRestarts int    `json:"max_restarts"`
 }
 
-// Response 通用响应
 type Response struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
 }
 
-// StatusResponse 状态响应
 type StatusResponse struct {
-	AppName      string `json:"app_name,omitempty"` // 应用名称（多应用模式）
+	AppName      string `json:"app_name,omitempty"`
 	Running      bool   `json:"running"`
 	PID          int    `json:"pid,omitempty"`
 	Type         string `json:"type,omitempty"`
@@ -39,5 +37,5 @@ type StatusResponse struct {
 	Entry        string `json:"entry,omitempty"`
 	AutoRestart  bool   `json:"auto_restart"`
 	RestartCount int    `json:"restart_count"`
-	Uptime       int64  `json:"uptime"` // 运行时间（秒）
+	Uptime       int64  `json:"uptime"`
 }

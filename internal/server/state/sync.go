@@ -186,25 +186,23 @@ func cloneStateData(data *StateData) *StateData {
 		var config *ProcessConfig
 		if appState.Config != nil {
 			config = &ProcessConfig{
-				Type:        appState.Config.Type,
-				WorkDir:     appState.Config.WorkDir,
-				Executable:  appState.Config.Executable,
-				Entry:       appState.Config.Entry,
-				Args:        appState.Config.Args,
-				AutoRestart: appState.Config.AutoRestart,
-				MaxRestarts: appState.Config.MaxRestarts,
+				Type: appState.Config.Type, WorkDir: appState.Config.WorkDir, Executable: appState.Config.Executable,
+				Entry: appState.Config.Entry, Args: appState.Config.Args,
+				Command:     append([]string(nil), appState.Config.Command...),
+				AutoRestart: appState.Config.AutoRestart, MaxRestarts: appState.Config.MaxRestarts,
 			}
 		}
 
 		// 深拷贝应用状态
 		copy.Apps[name] = &AppState{
-			Config:       config,
-			PID:          appState.PID,
-			StartTime:    appState.StartTime,
-			RestartCount: appState.RestartCount,
-			Status:       appState.Status,
-			WorkPath:     appState.WorkPath,
-			LogPath:      appState.LogPath,
+			Config: config, PID: appState.PID, StartTime: appState.StartTime,
+			RestartCount: appState.RestartCount, Status: appState.Status,
+			WorkPath: appState.WorkPath, LogPath: appState.LogPath,
+			DesiredConfig: appState.DesiredConfig, Generation: appState.Generation,
+			Backend: appState.Backend, ContainerID: appState.ContainerID,
+			Port: appState.Port, ExpiresAt: appState.ExpiresAt,
+			TerminationReason: appState.TerminationReason,
+			ProcessStartID:    appState.ProcessStartID,
 		}
 	}
 
@@ -223,6 +221,19 @@ func (sm *SyncManager) ReplaceState(data *StateData) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.state = cloneStateData(data)
+}
+
+// ReplaceApp atomically replaces one application's observed state.
+func (sm *SyncManager) ReplaceApp(appName string, app *AppState) {
+	copy := cloneStateData(&StateData{Apps: map[string]*AppState{appName: app}}).Apps[appName]
+	sm.mu.Lock()
+	sm.state.Apps[appName] = copy
+	sm.mu.Unlock()
+	select {
+	case sm.persistChan <- AppEvent{Type: "replace", AppName: appName}:
+	default:
+		sm.log.Warn("persist channel full while replacing app state", "app", appName)
+	}
 }
 
 // UpdateLogPath 更新日志路径

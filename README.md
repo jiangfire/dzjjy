@@ -138,6 +138,34 @@ GET /health
   -auto-restart
 ```
 
+### 声明式配置（apply / validate）
+
+`apply` 和 `validate` 使用严格的 `dzjjy/v1` YAML。配置中的 `command` 必须是参数数组，避免 shell 字符串拆分导致参数边界变化：
+
+```yaml
+apiVersion: dzjjy/v1
+kind: App
+metadata:
+  name: demo-python
+spec:
+  artifact: app.zip
+  runtime: {type: python, version: "3.12"}
+  command: [python, app.py, "--port", "9000"]
+  sandbox: {type: docker}
+  lifecycle: {ttl: 2h}
+```
+
+```bash
+./build/dzjjy-client validate -file app.yaml
+./build/dzjjy-client apply -server http://localhost:8080 -token your-secret-token -file app.yaml
+```
+
+artifact 路径相对于 YAML 文件。`StaticSite` 配置可使用 `spec.port`（`0` 表示自动分配），静态站点支持 SPA fallback。TTL 到期后应用进入 expired 状态。
+
+Docker sandbox 只接受平台维护的 Python 3.12、Node 22、Go 1.24 runtime template；需要 Linux Docker daemon。任意镜像、Dockerfile、Docker 参数、挂载和宿主路径均不开放，Docker 不可用时会明确失败，不会回退到宿主机进程。
+
+**安全边界：** `sandbox: {type: process}` 直接以服务端用户权限运行，并非安全隔离或恶意代码沙箱。请只用于可信应用；需要隔离时选择受控 Docker template。
+
 ### 常用管理命令
 
 ```bash

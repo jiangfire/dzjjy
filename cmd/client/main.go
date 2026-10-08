@@ -24,10 +24,13 @@ func main() {
 	}
 
 	command := os.Args[1]
-
 	switch command {
 	case "deploy":
 		deployCmd()
+	case "apply":
+		applyCmd()
+	case "validate":
+		validateCmd()
 	case "stop":
 		stopCmd()
 	case "restart":
@@ -43,7 +46,7 @@ func main() {
 	case "remove":
 		removeCmd()
 	default:
-		slog.Error("unknown command") // #nosec G706 - avoid logging raw user input
+		slog.Error("unknown command")
 		printUsage()
 		os.Exit(1)
 	}
@@ -388,7 +391,9 @@ func removeCmd() {
 func printUsage() {
 	fmt.Println("Usage: dzjjy-client <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  deploy   Deploy application to server")
+	fmt.Println("  deploy   Deploy application to server (legacy)")
+	fmt.Println("  apply    Apply a dzjjy YAML configuration")
+	fmt.Println("  validate Validate a dzjjy YAML configuration locally")
 	fmt.Println("  start    Start a stopped application")
 	fmt.Println("  stop     Stop running application")
 	fmt.Println("  restart  Restart running application")

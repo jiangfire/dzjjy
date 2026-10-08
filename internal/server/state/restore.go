@@ -54,8 +54,10 @@ func (rm *RestoreManager) Restore() error {
 
 // restoreApp 恢复单个应用
 func (rm *RestoreManager) restoreApp(appName string, state *AppState) error {
+	if state.Backend != "" && state.Backend != "process" {
+		return nil
+	}
 	rm.log.Info("restoring app", "app", appName, "pid", state.PID, "status", state.Status)
-
 	// 1. PID验证
 	if state.PID > 0 {
 		if rm.isProcessRunning(state.PID) {

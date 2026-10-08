@@ -2,11 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
 
-// StateNotifier 状态通知接口（用于状态持久化）
 type StateNotifier interface {
 	OnAppEvent(eventType string, appName string, config *ProcessConfig, pid int)
 }
@@ -27,6 +27,7 @@ type AppInfoReader interface {
 type MultiManager struct {
 	mu            sync.RWMutex
 	managers      map[string]*Manager
+	appLocks      map[string]*sync.Mutex
 	logDir        string
 	stateNotifier StateNotifier // 状态通知器
 }
@@ -36,6 +37,7 @@ type MultiManager struct {
 func NewMultiManager(logDir string) *MultiManager {
 	return &MultiManager{
 		managers: make(map[string]*Manager),
+		appLocks: make(map[string]*sync.Mutex),
 		logDir:   logDir,
 	}
 }
@@ -44,9 +46,21 @@ func NewMultiManager(logDir string) *MultiManager {
 func NewMultiManagerWithState(logDir string, notifier StateNotifier) *MultiManager {
 	return &MultiManager{
 		managers:      make(map[string]*Manager),
+		appLocks:      make(map[string]*sync.Mutex),
 		logDir:        logDir,
 		stateNotifier: notifier,
 	}
+}
+
+func (mm *MultiManager) appMutex(appName string) *sync.Mutex {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	if lock, ok := mm.appLocks[appName]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	mm.appLocks[appName] = lock
+	return lock
 }
 
 // SetStateNotifier 设置状态通知器
@@ -59,78 +73,77 @@ func (mm *MultiManager) SetStateNotifier(notifier StateNotifier) {
 // StartApp 启动指定应用
 // 遵循 LOD：只暴露必要信息，内部 Manager 保持封装
 func (mm *MultiManager) StartApp(ctx context.Context, appName string, config *ProcessConfig) error {
-	mm.mu.Lock()
-	defer mm.mu.Unlock()
-
 	if appName == "" {
 		return fmt.Errorf("app name cannot be empty")
 	}
+	lock := mm.appMutex(appName)
+	lock.Lock()
+	defer lock.Unlock()
 
-	// 检查是否已存在
-	if existingManager, exists := mm.managers[appName]; exists {
-		// 如果存在且正在运行，返回错误
-		if existingManager.IsRunning() {
-			return fmt.Errorf("app '%s' already running", appName)
-		}
-		// 如果存在但已停止，移除旧的管理器，创建新的
+	mm.mu.Lock()
+	existingManager, exists := mm.managers[appName]
+	if exists && existingManager.IsRunning() {
+		mm.mu.Unlock()
+		return fmt.Errorf("app '%s' already running", appName)
+	}
+	if exists {
 		delete(mm.managers, appName)
 	}
+	notifier := mm.stateNotifier
+	logDir := mm.logDir
+	mm.mu.Unlock()
 
-	// 创建新 Manager（依赖注入）
-	manager := NewManager(config, mm.logDir, appName)
-
-	// 如果有状态通知器，设置事件适配器
-	if mm.stateNotifier != nil {
-		adapter := &EventAdapter{
+	manager := NewManager(config, logDir, appName)
+	if notifier != nil {
+		manager.SetEventAdapter(&EventAdapter{
 			AppName: appName,
 			Notifier: &stateEventAdapter{
 				appName:       appName,
 				config:        config,
-				stateNotifier: mm.stateNotifier,
+				stateNotifier: notifier,
 			},
-		}
-		manager.SetEventAdapter(adapter)
+		})
 	}
-
-	// 启动应用
-	if err := manager.Start(config.Type, config.WorkDir, config.Executable, config.Entry, config.Args, config.AutoRestart, config.MaxRestarts); err != nil {
+	if err := manager.StartWithConfig(config); err != nil {
 		return fmt.Errorf("failed to start app '%s': %w", appName, err)
 	}
 
-	mm.managers[appName] = manager
-	return nil
-}
-
-// StopApp 停止指定应用
-// 注意：停止后管理器仍然保留，以便后续查询状态
-func (mm *MultiManager) StopApp(appName string) error {
 	mm.mu.Lock()
-	defer mm.mu.Unlock()
-
-	manager, exists := mm.managers[appName]
-	if !exists {
-		return fmt.Errorf("app '%s' not found", appName)
-	}
-
-	if err := manager.Stop(); err != nil {
-		return fmt.Errorf("failed to stop app '%s': %w", appName, err)
-	}
-
-	// 注意：不删除 manager，保留以便状态查询
-	// 管理器会在 RemoveApp 时被清理
+	mm.managers[appName] = manager
+	mm.mu.Unlock()
 	return nil
 }
 
-// RestartApp 重启指定应用
-func (mm *MultiManager) RestartApp(appName string) error {
+// StopApp stops one application while holding only its lifecycle lock.
+func (mm *MultiManager) StopApp(appName string) error {
+	lock := mm.appMutex(appName)
+	lock.Lock()
+	defer lock.Unlock()
+
 	mm.mu.RLock()
 	manager, exists := mm.managers[appName]
 	mm.mu.RUnlock()
-
 	if !exists {
 		return fmt.Errorf("app '%s' not found", appName)
 	}
+	if err := manager.Stop(); err != nil {
+		return fmt.Errorf("failed to stop app '%s': %w", appName, err)
+	}
+	return nil
+}
 
+// RestartApp restarts one application while holding its lifecycle lock.
+func (mm *MultiManager) RestartApp(appName string) error {
+	lock := mm.appMutex(appName)
+	lock.Lock()
+	defer lock.Unlock()
+
+	mm.mu.RLock()
+	manager, exists := mm.managers[appName]
+	mm.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("app '%s' not found", appName)
+	}
 	return manager.Restart()
 }
 
@@ -169,72 +182,79 @@ func (mm *MultiManager) GetAppInfo(appName string) (AppInfo, bool) {
 	return manager.GetAppInfo(), true
 }
 
-// RemoveApp 移除应用（不停止，仅从管理器移除）
-// 用于清理已停止的应用
+// RemoveApp removes an application from the in-memory registry.
 func (mm *MultiManager) RemoveApp(appName string) error {
+	lock := mm.appMutex(appName)
+	lock.Lock()
+	defer lock.Unlock()
+
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
-
 	if _, exists := mm.managers[appName]; !exists {
 		return fmt.Errorf("app '%s' not found", appName)
 	}
-
 	delete(mm.managers, appName)
 	return nil
 }
 
-// RestoreApp 将持久化的应用状态恢复到内存管理器中。
+// RestoreApp restores persisted process metadata into the manager.
 func (mm *MultiManager) RestoreApp(appName string, config *ProcessConfig, pid int, startTime int64, restartCount int, running bool, logPath string) error {
-	mm.mu.Lock()
-	defer mm.mu.Unlock()
-
 	if appName == "" {
 		return fmt.Errorf("app name cannot be empty")
 	}
+	lock := mm.appMutex(appName)
+	lock.Lock()
+	defer lock.Unlock()
 
-	manager := NewManager(config, mm.logDir, appName)
-	if mm.stateNotifier != nil {
-		adapter := &EventAdapter{
-			AppName: appName,
-			Notifier: &stateEventAdapter{
-				appName:       appName,
-				config:        config,
-				stateNotifier: mm.stateNotifier,
-			},
-		}
-		manager.SetEventAdapter(adapter)
+	mm.mu.RLock()
+	logDir := mm.logDir
+	notifier := mm.stateNotifier
+	mm.mu.RUnlock()
+	manager := NewManager(config, logDir, appName)
+	if notifier != nil {
+		manager.SetEventAdapter(&EventAdapter{
+			AppName:  appName,
+			Notifier: &stateEventAdapter{appName: appName, config: config, stateNotifier: notifier},
+		})
 	}
-
 	if err := manager.Restore(config, pid, startTime, restartCount, running, logPath); err != nil {
 		return fmt.Errorf("failed to restore app '%s': %w", appName, err)
 	}
-
+	mm.mu.Lock()
 	mm.managers[appName] = manager
+	mm.mu.Unlock()
 	return nil
 }
 
-// StopAll 停止所有应用（用于优雅关闭）
+// StopAll stops all registered applications for graceful shutdown.
 func (mm *MultiManager) StopAll() error {
-	mm.mu.Lock()
-	defer mm.mu.Unlock()
+	mm.mu.RLock()
+	managers := make(map[string]*Manager, len(mm.managers))
+	for name, manager := range mm.managers {
+		managers[name] = manager
+	}
+	mm.mu.RUnlock()
 
 	var errs []error
-	for name, manager := range mm.managers {
-		if err := manager.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("stop app '%s': %w", name, err))
+	for name, manager := range managers {
+		lock := mm.appMutex(name)
+		lock.Lock()
+		if manager.IsRunning() {
+			if err := manager.Stop(); err != nil {
+				errs = append(errs, fmt.Errorf("stop app '%s': %w", name, err))
+			}
 		}
+		mm.mu.Lock()
+		if mm.managers[name] == manager {
+			delete(mm.managers, name)
+		}
+		mm.mu.Unlock()
+		lock.Unlock()
 	}
-
-	// 清空 map
-	mm.managers = make(map[string]*Manager)
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors stopping apps: %v", errs)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
-// GetStateSnapshot 获取所有应用的状态快照（用于持久化）
+// GetStateSnapshot returns a snapshot of all application states.
 func (mm *MultiManager) GetStateSnapshot() map[string]*AppInfo {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
@@ -295,13 +315,10 @@ func (mm *MultiManager) GetProcessConfig(appName string) (*ProcessConfig, bool) 
 
 	// 深拷贝配置
 	config := &ProcessConfig{
-		Type:        manager.config.Type,
-		WorkDir:     manager.config.WorkDir,
-		Executable:  manager.config.Executable,
-		Entry:       manager.config.Entry,
-		Args:        manager.config.Args,
-		AutoRestart: manager.config.AutoRestart,
-		MaxRestarts: manager.config.MaxRestarts,
+		Type: manager.config.Type, WorkDir: manager.config.WorkDir, Executable: manager.config.Executable,
+		Entry: manager.config.Entry, Args: manager.config.Args,
+		Command:     append([]string(nil), manager.config.Command...),
+		AutoRestart: manager.config.AutoRestart, MaxRestarts: manager.config.MaxRestarts,
 	}
 	return config, true
 }
