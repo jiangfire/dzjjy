@@ -47,7 +47,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	if document.Kind == "App" {
 		if document.Spec.Runtime != nil {
-			h.sendError(w, "runtime templates are not configured", http.StatusNotImplemented)
+			h.sendError(w, "runtime templates require sandbox.type \"docker\"; the process sandbox runs spec.command directly without a runtime template", http.StatusNotImplemented)
 			return
 		}
 		h.applyProcess(w, r, document, configText)

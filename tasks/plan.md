@@ -14,37 +14,37 @@ Implement the approved scope in `docs/REVIEW-AND-DESIGN.md`: reliability fixes, 
 ## Task List
 
 ### Phase 0: Reliability foundation
-- [ ] Add regression tests and fixes for runtime lock release and terminal state persistence.
-- [ ] Add bounded archive extraction for file/count/total limits with truncation detection.
-- [ ] Add per-app lifecycle serialization and process identity checks; implement process-tree stop per platform where supported.
-- [ ] Add server shutdown orchestration and flush behavior.
+- [x] Add regression tests and fixes for runtime lock release and terminal state persistence.
+- [x] Add bounded archive extraction for file/count/total limits with truncation detection.
+- [x] Add per-app lifecycle serialization and process identity checks; implement process-tree stop per platform where supported.
+- [x] Add server shutdown orchestration and flush behavior.
 
 ### Checkpoint: Foundation
-- [ ] Focused runtime/archive/handler/state tests pass.
-- [ ] Existing `go test ./...` and `go vet ./...` remain clean.
+- [x] Focused runtime/archive/handler/state tests pass.
+- [x] Existing `go test ./...` and `go vet ./...` remain clean.
 
 ### Phase 1: YAML, reconcile, and StaticSite
-- [ ] Define strict YAML model and validation for `App` and `StaticSite`, including command arrays and TTL.
-- [ ] Add config apply/validate API/client paths while preserving legacy deploy behavior.
-- [ ] Add desired/generation/observed state representation and idempotent process reconcile.
-- [ ] Add safe StaticSite file server with independent port allocation, status exposure, and cleanup.
+- [x] Define strict YAML model and validation for `App` and `StaticSite`, including command arrays and TTL.
+- [x] Add config apply/validate API/client paths while preserving legacy deploy behavior.
+- [x] Add desired/generation/observed state representation and idempotent process reconcile.
+- [x] Add safe StaticSite file server with independent port allocation, status exposure, and cleanup.
 
 ### Checkpoint: Declarative process flow
-- [ ] YAML parsing, apply failure preservation, idempotent apply, static serving/path safety, and route tests pass.
+- [x] YAML parsing, apply failure preservation, idempotent apply, static serving/path safety, and route tests pass.
 
 ### Phase 2: Docker and TTL
-- [ ] Define platform-owned Python/Node/Go templates and a Docker backend contract with explicit unavailable/platform errors.
-- [ ] Implement controlled artifact/container lifecycle, labels, timeout stop, kill/remove, and recovery hooks.
-- [ ] Implement absolute TTL scheduling and generation-aware expiry for all supported backends.
-- [ ] Add persistence/recovery and termination-reason tests.
+- [x] Define platform-owned Python/Node/Go templates and a Docker backend contract with explicit unavailable/platform errors.
+- [x] Implement controlled artifact/container lifecycle, labels, timeout stop, kill/remove, and recovery hooks.
+- [x] Implement absolute TTL scheduling and generation-aware expiry for all supported backends.
+- [x] Add persistence/recovery and termination-reason tests.
 
 ### Checkpoint: Lifecycle complete
-- [ ] Full unit/integration tests pass; Docker daemon E2E is run only if a real daemon is available.
+- [x] Full unit/integration tests pass; Docker daemon E2E is run only if a real daemon is available.
 
 ### Documentation and review
-- [ ] Update architecture and usage documentation for YAML, StaticSite, process safety, Docker boundaries, and TTL.
-- [ ] Review changed code across correctness, readability, architecture, security, and performance; fix in-scope findings.
-- [ ] Run `go test ./...`, `go vet ./...`, cross-compile checks where possible, and `git diff --check`.
+- [x] Update architecture and usage documentation for YAML, StaticSite, process safety, Docker boundaries, and TTL.
+- [x] Review changed code across correctness, readability, architecture, security, and performance; fix in-scope findings.
+- [x] Run `go test ./...`, `go vet ./...`, cross-compile checks where possible, and `git diff --check`.
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |

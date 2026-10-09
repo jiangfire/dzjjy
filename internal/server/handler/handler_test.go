@@ -312,7 +312,7 @@ func TestLogs_InvalidLinesFallsBackToDefault(t *testing.T) {
 		WorkDir:    t.TempDir(),
 		Executable: "app.exe",
 	}
-	require.NoError(t, h.multiManager.RestoreApp("app", config, 0, 0, 0, false, ""))
+	require.NoError(t, h.multiManager.RestoreApp("app", config, 0, 0, 0, false, "", false))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/apps/app/logs?lines=invalid", nil)
 	recorder := httptest.NewRecorder()

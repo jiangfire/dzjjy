@@ -89,6 +89,7 @@ func convertConfig(config *runtime.ProcessConfig) *ProcessConfig {
 		Executable:  config.Executable,
 		Entry:       config.Entry,
 		Args:        config.Args,
+		Command:     append([]string(nil), config.Command...),
 		AutoRestart: config.AutoRestart,
 		MaxRestarts: config.MaxRestarts,
 	}

@@ -14,6 +14,8 @@ type AppEvent struct {
 	Config    *ProcessConfig `json:"config"`    // 配置（用于register/config_change）
 	PID       int            `json:"pid"`       // 进程ID（用于start/restart）
 	Timestamp int64          `json:"timestamp"` // 时间戳
+	Reason    string         `json:"reason,omitempty"`  // 终止原因（stop/failed）
+	StartID   string         `json:"start_id,omitempty"` // 进程启动身份（start/restart）
 }
 
 // SyncManager 状态同步管理器
@@ -79,6 +81,7 @@ func (sm *SyncManager) updateAppState(event AppEvent) {
 		appState.Config = event.Config
 		appState.WorkPath = event.Config.WorkDir
 		appState.Status = StatusStopped
+		appState.TerminationReason = ""
 
 	case "config_change":
 		appState.Config = event.Config
@@ -88,21 +91,27 @@ func (sm *SyncManager) updateAppState(event AppEvent) {
 		appState.PID = event.PID
 		appState.StartTime = event.Timestamp
 		appState.Status = StatusRunning
+		appState.TerminationReason = ""
+		appState.ProcessStartID = event.StartID
 		// 重启计数在restart事件中更新
 
 	case "stop":
 		appState.Status = StatusStopped
 		appState.PID = 0
+		appState.TerminationReason = event.Reason
 
 	case "restart":
 		appState.PID = event.PID
 		appState.StartTime = event.Timestamp
 		appState.RestartCount++
 		appState.Status = StatusRunning
+		appState.TerminationReason = ""
+		appState.ProcessStartID = event.StartID
 
 	case "failed":
 		appState.Status = StatusFailed
 		appState.PID = 0
+		appState.TerminationReason = event.Reason
 
 	case "log_path":
 		// 单独更新日志路径
@@ -203,6 +212,7 @@ func cloneStateData(data *StateData) *StateData {
 			Port: appState.Port, ExpiresAt: appState.ExpiresAt,
 			TerminationReason: appState.TerminationReason,
 			ProcessStartID:    appState.ProcessStartID,
+			IdentityVerified:  appState.IdentityVerified,
 		}
 	}
 

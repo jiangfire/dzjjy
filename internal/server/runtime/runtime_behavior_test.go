@@ -21,7 +21,7 @@ type stateNotifierSpy struct {
 	events []capturedStateEvent
 }
 
-func (s *stateNotifierSpy) OnAppEvent(eventType string, appName string, config *ProcessConfig, pid int) {
+func (s *stateNotifierSpy) OnAppEvent(eventType string, appName string, config *ProcessConfig, pid int, reason string, startID string) {
 	var configCopy *ProcessConfig
 	if config != nil {
 		copyValue := *config
@@ -109,7 +109,7 @@ func TestManager_RestoreReadsLogsFromFileAndExposesConfig(t *testing.T) {
 
 	manager := NewManager(nil, root, "demo")
 	startTime := time.Now().Add(-2 * time.Second).Unix()
-	require.NoError(t, manager.Restore(config, os.Getpid(), startTime, 2, true, logPath))
+	require.NoError(t, manager.Restore(config, os.Getpid(), startTime, 2, true, logPath, true))
 
 	logs := manager.GetLogs(2)
 	require.Len(t, logs, 2)

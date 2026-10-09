@@ -32,6 +32,7 @@ type AppState struct {
 	ExpiresAt         int64          `json:"expires_at,omitempty"`
 	TerminationReason string         `json:"termination_reason,omitempty"`
 	ProcessStartID    string         `json:"process_start_id,omitempty"`
+	IdentityVerified  bool           `json:"-"` // 恢复阶段判定，仅内存传递，不落盘
 }
 
 // ProcessConfig 进程配置（使用pkg/api中的公共类型）

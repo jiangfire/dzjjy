@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"log/slog"
+
+	"github.com/jiangfire/dzjjy/internal/server/runtime"
 )
 
 // RestoreManager 恢复管理器
@@ -58,11 +60,18 @@ func (rm *RestoreManager) restoreApp(appName string, state *AppState) error {
 		return nil
 	}
 	rm.log.Info("restoring app", "app", appName, "pid", state.PID, "status", state.Status)
-	// 1. PID验证
+
+	// 终态（expired/failed）保持原样：过期应用不允许被恢复流程复活。
+	if state.Status == StatusExpired || state.Status == StatusFailed {
+		state.PID = 0
+		return nil
+	}
+
+	// 1. PID验证 + 进程身份校验
+	if state.PID > 0 && rm.isProcessRunning(state.PID) {
+		return rm.recoverRunningApp(appName, state)
+	}
 	if state.PID > 0 {
-		if rm.isProcessRunning(state.PID) {
-			return rm.recoverRunningApp(appName, state)
-		}
 		rm.log.Warn("process not running, cleaning up", "pid", state.PID)
 	}
 
@@ -158,18 +167,32 @@ func isWindows() bool {
 func (rm *RestoreManager) recoverRunningApp(appName string, state *AppState) error {
 	rm.log.Info("recovering running app", "app", appName, "pid", state.PID)
 
-	// 验证进程的实际状态
-	// 尝试获取进程信息
-	process, err := os.FindProcess(state.PID)
-	if err != nil {
-		return fmt.Errorf("failed to find process: %w", err)
-	}
-
-	// 在Unix上，发送信号0验证
-	if !isWindows() {
-		if err := process.Signal(syscall.Signal(0)); err != nil {
-			return fmt.Errorf("process not responding: %w", err)
+	// 进程身份校验：ProcessStartID 记录了启动时的进程启动身份；不一致说明 PID 已被
+	// 其他进程复用，绝不能接管；无法确认时以"未验证"身份接管且不授予 kill 权限。
+	if state.ProcessStartID != "" {
+		current, err := runtime.ProcessStartIDFor(state.PID)
+		if err != nil {
+			rm.log.Warn("cannot verify process identity; adopting without kill authority",
+				"app", appName, "pid", state.PID, "error", err)
+		} else if current != state.ProcessStartID {
+			rm.log.Warn("pid was reused by another process; marking app stopped",
+				"app", appName, "pid", state.PID)
+			state.Status = StatusStopped
+			state.PID = 0
+			if state.Config != nil {
+				rm.syncManager.OnAppEvent(AppEvent{
+					Type:    "register",
+					AppName: appName,
+					Config:  state.Config,
+				})
+			}
+			return nil
+		} else {
+			state.IdentityVerified = true
 		}
+	} else {
+		rm.log.Warn("persisted process identity is missing; adopting without kill authority",
+			"app", appName, "pid", state.PID)
 	}
 
 	// 恢复状态
@@ -188,6 +211,7 @@ func (rm *RestoreManager) recoverRunningApp(appName string, state *AppState) err
 		Type:    "start",
 		AppName: appName,
 		PID:     state.PID,
+		StartID: state.ProcessStartID,
 	})
 
 	// 注意：我们不创建新的Manager来管理这个进程

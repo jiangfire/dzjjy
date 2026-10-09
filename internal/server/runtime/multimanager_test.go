@@ -348,7 +348,7 @@ func TestMultiManager_RestoreStoppedApp(t *testing.T) {
 		MaxRestarts: 3,
 	}
 
-	err = mm.RestoreApp("test-app", config, 0, 1704067200, 2, false, "")
+	err = mm.RestoreApp("test-app", config, 0, 1704067200, 2, false, "", false)
 	require.NoError(t, err)
 
 	info, exists := mm.GetAppInfo("test-app")

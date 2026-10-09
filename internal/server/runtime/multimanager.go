@@ -8,7 +8,7 @@ import (
 )
 
 type StateNotifier interface {
-	OnAppEvent(eventType string, appName string, config *ProcessConfig, pid int)
+	OnAppEvent(eventType string, appName string, config *ProcessConfig, pid int, reason string, startID string)
 }
 
 // AppInfoReader 应用信息只读接口（遵循LOD原则）
@@ -198,7 +198,7 @@ func (mm *MultiManager) RemoveApp(appName string) error {
 }
 
 // RestoreApp restores persisted process metadata into the manager.
-func (mm *MultiManager) RestoreApp(appName string, config *ProcessConfig, pid int, startTime int64, restartCount int, running bool, logPath string) error {
+func (mm *MultiManager) RestoreApp(appName string, config *ProcessConfig, pid int, startTime int64, restartCount int, running bool, logPath string, identityVerified bool) error {
 	if appName == "" {
 		return fmt.Errorf("app name cannot be empty")
 	}
@@ -217,7 +217,7 @@ func (mm *MultiManager) RestoreApp(appName string, config *ProcessConfig, pid in
 			Notifier: &stateEventAdapter{appName: appName, config: config, stateNotifier: notifier},
 		})
 	}
-	if err := manager.Restore(config, pid, startTime, restartCount, running, logPath); err != nil {
+	if err := manager.Restore(config, pid, startTime, restartCount, running, logPath, identityVerified); err != nil {
 		return fmt.Errorf("failed to restore app '%s': %w", appName, err)
 	}
 	mm.mu.Lock()
@@ -341,13 +341,15 @@ func (a *stateEventAdapter) Notify(eventType string, data map[string]interface{}
 			pid = newPID
 		}
 	}
+	reason, _ := data["reason"].(string)
+	startID, _ := data["start_id"].(string)
 
-	a.stateNotifier.OnAppEvent(eventType, a.appName, a.config, pid)
+	a.stateNotifier.OnAppEvent(eventType, a.appName, a.config, pid, reason, startID)
 
 	if logPath, ok := data["logPath"].(string); ok && logPath != "" {
 		a.stateNotifier.OnAppEvent("log_path", a.appName, &ProcessConfig{
 			WorkDir: logPath,
-		}, 0)
+		}, 0, "", "")
 	}
 }
 

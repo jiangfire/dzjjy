@@ -77,7 +77,7 @@ func (h *Handler) applyProcess(w http.ResponseWriter, r *http.Request, document 
 	}
 	if oldState != nil && oldState.Status == state.StatusRunning {
 		if oldState.DesiredConfig == string(normalizedConfig) {
-			h.sendApplyProcessResult(w, document, oldState.Generation, oldState.ExpiresAt, oldState.PID)
+			h.sendApplyProcessResult(w, document, oldState.Generation, oldState.ExpiresAt, oldState.PID, "running")
 			return
 		}
 		h.sendError(w, "application is running; stop it before applying a changed configuration", http.StatusConflict)
@@ -112,7 +112,7 @@ func (h *Handler) applyProcess(w http.ResponseWriter, r *http.Request, document 
 		return
 	}
 	_ = os.RemoveAll(backupDir)
-	manager, _ := h.multiManager.GetApp(document.Metadata.Name)
+	info, _ := h.multiManager.GetAppInfo(document.Metadata.Name)
 	generation := uint64(1)
 	if oldState != nil {
 		generation = oldState.Generation + 1
@@ -126,9 +126,27 @@ func (h *Handler) applyProcess(w http.ResponseWriter, r *http.Request, document 
 		encoded, _ := json.Marshal(document)
 		h.syncManager.ReplaceApp(document.Metadata.Name, &state.AppState{
 			Config: processConfig, DesiredConfig: string(encoded), Generation: generation,
-			Backend: "process", PID: manager.GetPID(), StartTime: time.Now().Unix(),
+			Backend: "process", PID: info.PID, StartTime: time.Now().Unix(),
 			Status: state.StatusRunning, WorkPath: appWorkDir, ExpiresAt: expiresAt,
+			ProcessStartID: info.ProcessStartID,
 		})
+		// 进程可能在 apply 返回前就已退出，其终态事件可能先于上面的 ReplaceApp 到达而被
+		// running 快照覆盖。若运行时已不在线，等待终态事件落地；仍卡在 running 时以
+		// 运行时事实兜底，避免状态永久停留在 running。
+		if !info.Running {
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil && app.Status != state.StatusRunning {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil && app.Status == state.StatusRunning {
+				app.Status = state.StatusStopped
+				app.PID = 0
+				h.syncManager.ReplaceApp(document.Metadata.Name, app)
+			}
+		}
 		h.persistState()
 	}
 	if document.Spec.Lifecycle.TTL != "" {
@@ -136,14 +154,20 @@ func (h *Handler) applyProcess(w http.ResponseWriter, r *http.Request, document 
 		h.ttlScheduler.Cancel(document.Metadata.Name)
 		h.ttlScheduler.Schedule(document.Metadata.Name, generation, time.Now().Add(ttlDuration), h.expireApp)
 	}
-	h.sendApplyProcessResult(w, document, generation, expiresAt, manager.GetPID())
+	responseStatus, responsePID := "running", info.PID
+	if h.syncManager != nil {
+		if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil {
+			responseStatus, responsePID = app.Status, app.PID
+		}
+	}
+	h.sendApplyProcessResult(w, document, generation, expiresAt, responsePID, responseStatus)
 }
 
-func (h *Handler) sendApplyProcessResult(w http.ResponseWriter, document *appconfig.Document, generation uint64, expiresAt int64, pid int) {
+func (h *Handler) sendApplyProcessResult(w http.ResponseWriter, document *appconfig.Document, generation uint64, expiresAt int64, pid int, status string) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true, "message": "configuration applied",
-		"data": map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running", "pid": pid, "generation": generation, "expires_at": expiresAt},
+		"data": map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": status, "pid": pid, "generation": generation, "expires_at": expiresAt},
 	})
 }
 
@@ -172,7 +196,8 @@ func (h *Handler) expireApp(appName string, generation uint64) {
 		h.persistState()
 		return
 	}
-	if err := h.multiManager.StopApp(appName); err != nil {
+	// 进程可能已自行退出（状态事件尚未落地）；这不算清理失败。
+	if err := h.multiManager.StopApp(appName); err != nil && !strings.Contains(err.Error(), "no running application") {
 		app.Status = state.StatusFailed
 		app.PID = 0
 		app.TerminationReason = "cleanup_failure"

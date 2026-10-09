@@ -99,7 +99,9 @@ GET /health
 
 Available commands:
 
-- `deploy`
+- `deploy` (legacy multipart deploy)
+- `apply` (declarative YAML deploy)
+- `validate` (local YAML validation, no server required)
 - `start`
 - `stop`
 - `restart`

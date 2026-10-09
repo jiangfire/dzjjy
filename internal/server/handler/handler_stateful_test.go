@@ -130,6 +130,8 @@ func TestStart_ShortLivedProcessTransitionsToStoppedState(t *testing.T) {
 	require.NoError(t, os.MkdirAll(logDir, 0o755))
 
 	h := handler.NewHandlerWithState(uploadDir, workDir, logDir, stateFile)
+	// 结束时关闭 handler，让后台持久化循环停止，避免与 TempDir 清理竞态。
+	defer func() { _ = h.Shutdown() }()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/apps/demo/start":

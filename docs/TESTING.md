@@ -34,6 +34,18 @@ go test -race ./internal/server/...
 - 交叉平台验证：GitHub Actions 会在 Linux、Windows、macOS 上做构建冒烟检查
 - 质量巡检：`Quality` workflow 会额外输出覆盖率摘要并校验 `go.mod` / `go.sum`
 
+## Docker E2E 状态（如实声明）
+
+仓库内所有 Docker 相关测试（`internal/server/dockerbackend`、`handler/docker_apply*`）都基于 fake runner 的**单元/契约测试**，验证调用序列、标签校验、挂载约束与错误路径。**未在任何真实 Docker daemon 上执行过 E2E**；拥有 Linux Docker daemon 的环境应手动验证 create/start/log/stop/remove 全链路后，才能认为 Docker backend 经过 E2E 验证。
+
+## Phase 0-2 关键回归场景
+
+- 终态事件：max-restart / 重启失败 / 崩溃分别产生 `failed` 终态、清除 PID 并携带 `max_restart` / `restart_failure` / `crash` 原因
+- 进程身份：PID 被复用时恢复流程拒绝接管；身份未验证的恢复进程 stop 不会 kill
+- TTL 生命周期：手动 restart 新 generation 重算 TTL；服务重启后 TTL 继续生效；`expired` 终态不被恢复/调和复活
+- 声明式 apply：相同配置幂等；运行中改配置返回 409；停止后重 apply generation+1
+- StaticSite：路径穿越拒绝、固定端口冲突明确失败、stop/TTL/remove 关闭 listener 并清理站点目录
+
 ## 测试工具
 
 ### Testify

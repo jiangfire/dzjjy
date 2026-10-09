@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/jiangfire/dzjjy/internal/server/appconfig"
 	"github.com/jiangfire/dzjjy/internal/server/archive"
 	"github.com/jiangfire/dzjjy/internal/server/dockerbackend"
 	"github.com/jiangfire/dzjjy/internal/server/runtime"
@@ -65,7 +67,7 @@ func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler 
 }
 
 // OnAppEvent 实现 StateNotifier 接口，接收 Manager 的事件并转发给 SyncManager
-func (h *Handler) OnAppEvent(eventType string, appName string, config *runtime.ProcessConfig, pid int) {
+func (h *Handler) OnAppEvent(eventType string, appName string, config *runtime.ProcessConfig, pid int, reason string, startID string) {
 	if h.syncManager == nil {
 		return
 	}
@@ -76,6 +78,8 @@ func (h *Handler) OnAppEvent(eventType string, appName string, config *runtime.P
 		AppName: appName,
 		Config:  (*state.ProcessConfig)(config), // 类型别名转换
 		PID:     pid,
+		Reason:  reason,
+		StartID: startID,
 	})
 }
 
@@ -115,12 +119,30 @@ func (h *Handler) RestoreState() error {
 				appState.RestartCount,
 				appState.Status == state.StatusRunning,
 				appState.LogPath,
+				appState.IdentityVerified,
 			); err != nil {
 				slog.Error("failed to restore app into runtime manager", "app", appName, "error", err)
 			}
 		}
 
-		// 只处理已停止但需要自动重启的应用
+		// 恢复运行中的 process 应用时重建 TTL：服务停机期间到期则清理并标记 expired。
+		if appState.Status == state.StatusRunning && appState.ExpiresAt > 0 {
+			if appState.ExpiresAt <= time.Now().Unix() {
+				slog.Info("process app expired while server was down", "app", appName)
+				if err := h.multiManager.StopApp(appName); err != nil {
+					slog.Warn("failed to stop expired app on restore", "app", appName, "error", err)
+				}
+				appState.Status = state.StatusExpired
+				appState.PID = 0
+				appState.TerminationReason = "ttl"
+				h.syncManager.ReplaceApp(appName, appState)
+			} else {
+				h.ttlScheduler.Schedule(appName, appState.Generation, time.Unix(appState.ExpiresAt, 0), h.expireApp)
+			}
+		}
+
+		// 只处理已停止但需要自动重启的应用；
+		// expired/failed 是终态，恢复流程不允许复活（状态保留后不会进入该分支）。
 		if appState.Status == state.StatusStopped &&
 			appState.Config != nil &&
 			appState.Config.AutoRestart {
@@ -134,6 +156,9 @@ func (h *Handler) RestoreState() error {
 			if err := h.multiManager.StartApp(ctx, appName, config); err != nil {
 				slog.Error("failed to auto-restart app", "app", appName, "error", err)
 				// 继续处理其他应用
+			} else if appState.ExpiresAt > 0 && appState.ExpiresAt > time.Now().Unix() {
+				// 同一 generation 沿用原绝对到期时间，服务重启不延长寿命。
+				h.ttlScheduler.Schedule(appName, appState.Generation, time.Unix(appState.ExpiresAt, 0), h.expireApp)
 			}
 		}
 	}
@@ -517,7 +542,8 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, fmt.Sprintf("failed to stop Docker app: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if stopped, err := h.closeStaticSite(appName, false); stopped {
+	// 静态站点停止即清理站点目录：站点内容只来自 artifact，重新 apply 会重建。
+	if stopped, err := h.closeStaticSite(appName, true); stopped {
 		if err != nil {
 			h.sendError(w, fmt.Sprintf("failed to stop static site: %v", err), http.StatusInternalServerError)
 			return
@@ -623,6 +649,32 @@ func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
 	if err := h.multiManager.RestartApp(appName); err != nil {
 		h.sendError(w, fmt.Sprintf("failed to restart: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// 显式 restart 创建新 generation；声明式应用的 TTL 从新实例启动时重新计算。
+	if h.syncManager != nil {
+		if app := h.syncManager.GetState().Apps[appName]; app != nil && app.Backend == "process" && app.DesiredConfig != "" {
+			var document appconfig.Document
+			if err := json.Unmarshal([]byte(app.DesiredConfig), &document); err == nil {
+				info, _ := h.multiManager.GetAppInfo(appName)
+				app.Generation++
+				app.StartTime = time.Now().Unix()
+				app.PID = info.PID
+				app.ProcessStartID = info.ProcessStartID
+				app.TerminationReason = ""
+				if document.Spec.Lifecycle.TTL != "" {
+					if ttlDuration, ttlErr := time.ParseDuration(document.Spec.Lifecycle.TTL); ttlErr == nil {
+						app.ExpiresAt = time.Now().Add(ttlDuration).Unix()
+						h.ttlScheduler.Cancel(appName)
+						h.ttlScheduler.Schedule(appName, app.Generation, time.Unix(app.ExpiresAt, 0), h.expireApp)
+					}
+				} else {
+					app.ExpiresAt = 0
+					h.ttlScheduler.Cancel(appName)
+				}
+				h.syncManager.ReplaceApp(appName, app)
+			}
+		}
 	}
 
 	h.persistState()

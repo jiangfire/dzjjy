@@ -1,7 +1,7 @@
 # 架构设计
 
-> 文档更新：2026-01-01
-> 优化：合并重复内容，精简结构
+> 文档更新：2026-10-09
+> 说明：同步 Phase 0-2 声明式运行时（YAML/StaticSite/Docker/TTL）后的模块与安全边界
 
 ## 核心模块
 
@@ -9,22 +9,30 @@
 internal/
 ├── server/
 │   ├── runtime/          # 进程管理 + 日志系统
-│   │   ├── manager.go        # 单应用进程生命周期管理
-│   │   ├── multimanager.go   # 多应用管理器（包装 Manager）
-│   │   └── logger.go         # 双重存储（内存+文件 + 轮转）
+│   │   ├── runtime.go        # Manager：单应用进程生命周期管理（含进程树回收与身份校验）
+│   │   ├── multimanager.go   # 多应用管理器（包装 Manager，per-app 生命周期锁）
+│   │   ├── logger.go         # 双重存储（内存+文件 + 轮转）
+│   │   ├── identity_*.go     # 进程启动身份（Linux /proc 起始时间；Windows 父 PID）
+│   │   └── proctree_*.go     # 跨平台进程树终止（Linux 进程组；Windows taskkill /T）
+│   ├── appconfig/        # dzjjy/v1 YAML 严格解析（App/StaticSite、未知字段拒绝）
 │   ├── archive/          # 压缩包处理
-│   │   └── archive.go        # ZIP/TAR/GZ 解压（带安全防护）
+│   │   └── archive.go        # ZIP/TAR/GZ 解压（单文件/总量/文件数上限，超限报错）
+│   ├── staticserve/      # StaticSite 独立端口的静态文件服务（路径穿越防护、SPA fallback）
+│   ├── dockerbackend/    # Docker runtime template 注册表与容器生命周期（受控标签与挂载）
+│   ├── ttl/              # 绝对 TTL 调度器（按 expires_at 排序，generation 校验）
 │   ├── auth/             # 认证
 │   │   └── auth.go           # Bearer Token + 时序攻击防护
 │   ├── handler/          # HTTP API
-│   │   └── handler.go        # 部署/状态/日志等端点
+│   │   ├── handler.go        # 部署/状态/日志等端点与状态恢复
+│   │   └── apply*.go         # 声明式 apply/reconcile 与各 backend 生命周期
 │   └── state/            # 状态持久化
 │       ├── persist.go        # 原子写入 + SHA256
-│       ├── sync.go           # 事件驱动同步
-│       └── restore.go        # 自动恢复
+│       ├── sync.go           # 事件驱动同步（含终止原因与进程身份）
+│       └── restore.go        # 启动恢复（终态保留、PID 身份校验）
 └── client/
     └── deploy/           # 客户端部署
-        └── deploy.go         # API 调用封装
+        ├── deploy.go         # API 调用封装（legacy multipart）
+        └── apply.go          # dzjjy-client apply/validate 的 YAML 提交与结果透出
 ```
 
 ## 核心特性
@@ -172,4 +180,4 @@ Apply 先在独立 staging 目录解包和校验，再激活 artifact。相同 d
 
 Phase 3（闲置暂停、临时 URL、网络/端口映射、Secret、volume、资源配额、gVisor/runsc、Kubernetes 导入）不在当前实现范围内。
 
-进程状态恢复目前使用 PID 存在性检查；`ProcessStartID` 尚未接入验证，不能完全防御 PID reuse。进程树回收也尚未提供跨平台保证；部署可信进程并为任务配置外层系统级清理策略。
+进程状态恢复带 PID 身份校验：启动时持久化进程身份（Linux 为 `/proc` 起始时间，Windows 为父 PID），恢复时比对；不一致说明 PID 已被系统复用，绝不接管。身份缺失（legacy 状态）或平台无法确认时以"未验证"身份接管——状态可见但 stop 不执行 kill。进程树回收跨平台提供：Linux 下子进程放入独立进程组，stop 时整组 SIGKILL；Windows 下使用 `taskkill /T /F` 终止进程树。崩溃与重启耗尽会发出终态事件：状态转为 `failed`、清除 PID 并记录终止原因（`crash` / `max_restart` / `restart_failure`），与 `manual_stop` / `ttl` / `cleanup_failure` 区分。手动 restart 创建新 generation 并从新实例启动时重算 TTL；服务重启后按持久化的绝对 `expires_at` 重建调度，停机期间到期的实例直接清理并标记 `expired`，`expired` 是终态，恢复与调和都不会复活它。

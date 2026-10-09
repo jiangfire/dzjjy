@@ -48,11 +48,22 @@ func applyCmd() {
 		artifact, artifactName = f, filepath.Base(artifactPath)
 	}
 	client := deploy.NewClient(*server, *token)
-	if err := client.ApplyConfig(document.Metadata.Name, config, artifactName, artifact); err != nil {
+	result, err := client.ApplyConfig(document.Metadata.Name, config, artifactName, artifact)
+	if err != nil {
 		slog.Error("apply failed", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("configuration applied", "app", document.Metadata.Name, "server", *server)
+	attrs := []any{"app", result.AppName, "kind", result.Kind, "status", result.Status, "generation", result.Generation}
+	if result.Port != 0 {
+		attrs = append(attrs, "port", result.Port)
+	}
+	if result.PID != 0 {
+		attrs = append(attrs, "pid", result.PID)
+	}
+	if result.ExpiresAt != 0 {
+		attrs = append(attrs, "expires_at", result.ExpiresAt)
+	}
+	slog.Info("configuration applied", attrs...)
 }
 
 func validateCmd() {

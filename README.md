@@ -98,7 +98,9 @@ GET /health
 
 支持命令：
 
-- `deploy`
+- `deploy`（legacy multipart 部署）
+- `apply`（声明式 YAML 部署）
+- `validate`（本地校验 YAML，不连接服务端）
 - `start`
 - `stop`
 - `restart`

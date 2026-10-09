@@ -262,9 +262,6 @@ func extractGzip(archivePath, destDir string, state *extractionState) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	if state.limits.MaxFiles > 0 && state.limits.MaxFiles < 1 {
-		return fmt.Errorf("file count limit exceeded: maximum %d files", state.limits.MaxFiles)
-	}
 	fileOut, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 - path validated above
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)

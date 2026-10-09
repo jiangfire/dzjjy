@@ -74,33 +74,37 @@ func isValidExecutable(path string) bool {
 
 // AppInfo 应用信息（用于多应用管理）
 type AppInfo struct {
-	AppName      string
-	Running      bool
-	PID          int
-	Type         string
-	Executable   string
-	Entry        string
-	AutoRestart  bool
-	RestartCount int
-	Uptime       int64
+	AppName        string
+	Running        bool
+	PID            int
+	Type           string
+	Executable     string
+	Entry          string
+	AutoRestart    bool
+	RestartCount   int
+	Uptime         int64
+	ProcessStartID string // 进程启动身份（用于持久化与恢复比对）
 }
 
 // Manager 运行时管理器
 type Manager struct {
-	mu           sync.RWMutex
-	cmd          *exec.Cmd
-	config       *ProcessConfig
-	ctx          context.Context
-	cancel       context.CancelFunc
-	restartCount int
-	startTime    time.Time
-	running      bool
-	logger       *Logger
-	logDir       string
-	eventAdapter *EventAdapter // 事件通知适配器
-	appName      string        // 应用名称（用于事件）
-	monitorDone  chan struct{} // 监控goroutine完成信号
-	recovered    bool          // 是否为恢复的外部进程（无监控）
+	mu               sync.RWMutex
+	cmd              *exec.Cmd
+	config           *ProcessConfig
+	ctx              context.Context
+	cancel           context.CancelFunc
+	restartCount     int
+	startTime        time.Time
+	running          bool
+	logger           *Logger
+	logDir           string
+	eventAdapter     *EventAdapter // 事件通知适配器
+	appName          string        // 应用名称（用于事件）
+	monitorDone      chan struct{} // 监控goroutine完成信号
+	recovered        bool          // 是否为恢复的外部进程（无监控）
+	identityVerified bool          // 恢复进程的身份是否已通过启动身份校验
+	processStartID   string        // 当前进程的启动身份（用于防 PID 复用）
+	ownsProcessGroup bool          // 是否由本管理器创建进程组（可整组回收）
 }
 
 // NewManager 创建管理器
@@ -128,9 +132,11 @@ func (m *Manager) SetAppName(appName string) {
 
 // Restore 从持久化状态恢复管理器元数据。
 // 如果 running=true，则尝试绑定到现有 PID 以支持 status/stop/restart。
-func (m *Manager) Restore(config *ProcessConfig, pid int, startTimeUnix int64, restartCount int, running bool, logPath string) error {
+// identityVerified 表示恢复层已确认该 PID 仍是原来的进程；未确认时 Stop 不会执行 kill。
+func (m *Manager) Restore(config *ProcessConfig, pid int, startTimeUnix int64, restartCount int, running bool, logPath string, identityVerified bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.identityVerified = identityVerified
 
 	if config != nil {
 		m.config = &ProcessConfig{
@@ -226,6 +232,8 @@ func (m *Manager) StartWithConfig(config *ProcessConfig) error {
 	m.logger = NewLogger(m.logDir, appName)
 	if err := m.logger.Start(); err != nil {
 		m.running = false
+		m.cancel()
+		m.cancel = nil
 		m.mu.Unlock()
 		return fmt.Errorf("failed to start logger: %w", err)
 	}
@@ -235,6 +243,8 @@ func (m *Manager) StartWithConfig(config *ProcessConfig) error {
 	// 启动进程
 	if err := m.startProcess(); err != nil {
 		m.running = false
+		m.cancel()
+		m.cancel = nil
 		if stopErr := m.logger.Stop(); stopErr != nil {
 			slog.Warn("failed to stop logger", "error", stopErr)
 		}
@@ -254,6 +264,7 @@ func (m *Manager) StartWithConfig(config *ProcessConfig) error {
 	if m.cmd != nil && m.cmd.Process != nil {
 		pid = m.cmd.Process.Pid
 	}
+	startID := m.processStartID
 	logPath := ""
 	if m.logger != nil {
 		logPath = m.logger.GetLogFile()
@@ -262,8 +273,9 @@ func (m *Manager) StartWithConfig(config *ProcessConfig) error {
 
 	// 启动事件需要在 Start 返回前落到状态层，避免紧跟着的 Stop 把状态回写成 running。
 	m.notify("start", map[string]interface{}{
-		"pid":     pid,
-		"logPath": logPath,
+		"pid":      pid,
+		"logPath":  logPath,
+		"start_id": startID,
 	})
 
 	return nil
@@ -334,6 +346,7 @@ func (m *Manager) startProcess() error {
 	}
 
 	cmd.Dir = m.config.WorkDir
+	cmd.SysProcAttr = newSysProcAttr()
 
 	// 捕获标准输出和标准错误
 	stdout, err := cmd.StdoutPipe()
@@ -352,6 +365,14 @@ func (m *Manager) startProcess() error {
 
 	m.cmd = cmd
 	m.startTime = time.Now()
+	m.ownsProcessGroup = ownsProcessGroups()
+	// 采集进程启动身份；失败时留空，恢复阶段按"身份未知"保守处理。
+	if id := NewProcessIdentity(cmd.Process.Pid); id != "" {
+		m.processStartID = id
+	} else {
+		m.processStartID = ""
+		slog.Debug("process identity unavailable", "pid", cmd.Process.Pid)
+	}
 
 	slog.Info("process started",
 		"pid", cmd.Process.Pid,
@@ -411,12 +432,25 @@ func (m *Manager) monitor() {
 					"max_restarts", config.MaxRestarts,
 					"executable", config.Executable,
 				)
+				terminalPID := 0
+				if m.cmd != nil && m.cmd.Process != nil {
+					terminalPID = m.cmd.Process.Pid
+				}
 				if m.logger != nil {
 					msg := fmt.Sprintf("Process exited and reached max restart limit (%d)", config.MaxRestarts)
 					m.logger.WriteLog("system", msg)
+					if err := m.logger.Stop(); err != nil {
+						slog.Warn("failed to stop logger", "error", err)
+					}
 				}
 				m.running = false
+				m.cmd = nil
 				m.mu.Unlock()
+				// 终态必须发事件，否则持久化状态会停留在 running+旧 PID。
+				m.notify("failed", map[string]interface{}{
+					"pid":    terminalPID,
+					"reason": "max_restart",
+				})
 				return
 			}
 
@@ -444,12 +478,31 @@ func (m *Manager) monitor() {
 				if m.logger != nil {
 					msg := fmt.Sprintf("Failed to restart process: %v", err)
 					m.logger.WriteLog("system", msg)
+					if stopErr := m.logger.Stop(); stopErr != nil {
+						slog.Warn("failed to stop logger", "error", stopErr)
+					}
 				}
 				m.running = false
+				m.cmd = nil
 				m.mu.Unlock()
+				// 重启失败同样是终态，必须让状态层感知并清除 PID。
+				m.notify("failed", map[string]interface{}{
+					"pid":    0,
+					"reason": "restart_failure",
+				})
 				return
 			}
+			restartPID := 0
+			if m.cmd != nil && m.cmd.Process != nil {
+				restartPID = m.cmd.Process.Pid
+			}
+			restartStartID := m.processStartID
 			m.mu.Unlock()
+			// 自动重启后同步新 PID，避免状态层持有过期 PID。
+			m.notify("restart", map[string]interface{}{
+				"new_pid":  restartPID,
+				"start_id": restartStartID,
+			})
 		}
 	}
 }
@@ -466,8 +519,9 @@ func (m *Manager) waitProcess() {
 	if cmd != nil && cmd.Process != nil {
 		pid := cmd.Process.Pid
 		// 等待进程退出（阻塞操作，不持有锁）
-		if err := cmd.Wait(); err != nil {
-			slog.Warn("process wait error", "pid", pid, "error", err)
+		exitErr := cmd.Wait()
+		if exitErr != nil {
+			slog.Warn("process wait error", "pid", pid, "error", exitErr)
 		}
 
 		// 进程已退出，更新状态
@@ -484,9 +538,18 @@ func (m *Manager) waitProcess() {
 		m.mu.Unlock()
 
 		if wasRunning {
-			m.notify("stop", map[string]interface{}{
-				"pid": pid,
-			})
+			if exitErr != nil {
+				// 非零退出且未被手动停止：按崩溃记录为终态。
+				m.notify("failed", map[string]interface{}{
+					"pid":    pid,
+					"reason": "crash",
+				})
+			} else {
+				m.notify("stop", map[string]interface{}{
+					"pid":    pid,
+					"reason": "",
+				})
+			}
 		}
 	}
 }
@@ -503,21 +566,21 @@ func (m *Manager) Stop() error {
 	// 标记为停止状态
 	m.running = false
 
-	// 取消上下文，停止监控
-	if m.cancel != nil {
-		m.cancel()
-	}
-
 	// 杀死进程
 	var pid int
 	if m.cmd != nil && m.cmd.Process != nil {
 		pid = m.cmd.Process.Pid
-		if err := m.cmd.Process.Kill(); err != nil {
-			// 进程可能已退出：Windows 上有时会返回 "Access is denied"
+		if m.recovered && !m.identityVerified {
+			// 身份不确定的恢复进程不允许 kill：PID 可能已被系统复用。
+			slog.Warn("refusing to kill recovered process with unverified identity", "pid", pid)
+		} else if err := killProcessTree(pid, m.cmd.Process, m.ownsProcessGroup); err != nil {
+			// 进程可能已退出：Windows 上有时会返回 "Access is denied"；
+			// 已被 Wait 回收的进程则返回 "invalid argument"——两种情况进程都已不在，视为停止成功。
 			isProcessDone := errors.Is(err, os.ErrProcessDone)
-			isWindowsAccessDenied := os.PathSeparator == '\\' &&
-				strings.Contains(strings.ToLower(err.Error()), "access is denied")
-			if !isProcessDone && !isWindowsAccessDenied {
+			errText := strings.ToLower(err.Error())
+			isWindowsTolerable := os.PathSeparator == '\\' &&
+				(strings.Contains(errText, "access is denied") || strings.Contains(errText, "invalid argument"))
+			if !isProcessDone && !isWindowsTolerable {
 				m.mu.Unlock()
 				return fmt.Errorf("failed to kill process: %w", err)
 			}
@@ -528,6 +591,12 @@ func (m *Manager) Stop() error {
 			msg := fmt.Sprintf("Process stopped: PID=%d", pid)
 			m.logger.WriteLog("system", msg)
 		}
+	}
+
+	// 取消上下文，停止监控。放在显式 kill 之后，避免 CommandContext 的
+	// 自动 kill 抢先终止进程导致 Wait 提前回收、显式 kill 误报失败。
+	if m.cancel != nil {
+		m.cancel()
 	}
 
 	// 停止日志收集
@@ -551,7 +620,8 @@ func (m *Manager) Stop() error {
 
 	// 发送停止事件
 	m.notify("stop", map[string]interface{}{
-		"pid": pid,
+		"pid":    pid,
+		"reason": "manual_stop",
 	})
 
 	return nil
@@ -581,23 +651,22 @@ func (m *Manager) Restart() error {
 	// 等待一小段时间
 	time.Sleep(500 * time.Millisecond)
 
-	// 重新启动
-	err := m.Start(
-		config.Type,
-		config.WorkDir,
-		config.Executable,
-		config.Entry,
-		config.Args,
-		config.AutoRestart,
-		config.MaxRestarts,
-	)
+	// 重新启动（使用完整配置，保留参数数组，避免 YAML command 边界丢失）
+	err := m.StartWithConfig(config)
 
 	// 发送重启事件
 	if err == nil {
-		newPID := m.GetPID()
+		m.mu.RLock()
+		newPID := 0
+		if m.cmd != nil && m.cmd.Process != nil {
+			newPID = m.cmd.Process.Pid
+		}
+		startID := m.processStartID
+		m.mu.RUnlock()
 		m.notify("restart", map[string]interface{}{
-			"old_pid": oldPID,
-			"new_pid": newPID,
+			"old_pid":  oldPID,
+			"new_pid":  newPID,
+			"start_id": startID,
 		})
 	}
 
@@ -679,6 +748,7 @@ func (m *Manager) GetAppInfo() AppInfo {
 	if m.cmd != nil && m.cmd.Process != nil {
 		info.PID = m.cmd.Process.Pid
 	}
+	info.ProcessStartID = m.processStartID
 
 	if m.config != nil {
 		info.Type = m.config.Type
