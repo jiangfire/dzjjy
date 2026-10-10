@@ -5,13 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/jiangfire/dzjjy/internal/server/proxy"
 	"github.com/jiangfire/dzjjy/internal/server/state"
 	"github.com/jiangfire/dzjjy/internal/server/staticserve"
 )
 
 func (h *Handler) closeStaticSite(appName string, removeFiles bool) (bool, error) {
 	h.ttlScheduler.Cancel(appName)
+	h.idleTracker.Cancel(appName)
+	h.proxyMu.Lock()
+	proxyServer := h.proxyServer
+	h.proxyMu.Unlock()
+	if proxyServer != nil && h.syncManager != nil {
+		if app := h.syncManager.GetState().Apps[appName]; app != nil && app.ExposureToken != "" {
+			proxyServer.Unregister(strings.TrimPrefix(app.ExposureToken, proxy.TokenPrefix))
+		}
+	}
 	h.sitesMu.Lock()
 	site, ok := h.sites[appName]
 	if ok {
@@ -51,6 +62,16 @@ func (h *Handler) markStaticStopped(appName, reason string) {
 // Shutdown stops all process and container backends, closes listeners, and flushes state.
 func (h *Handler) Shutdown() error {
 	h.ttlScheduler.Close()
+	h.idleTracker.Close()
+	h.proxyMu.Lock()
+	proxyServer := h.proxyServer
+	h.proxyServer = nil
+	h.proxyMu.Unlock()
+	if proxyServer != nil {
+		if err := proxyServer.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			return fmt.Errorf("close exposure proxy: %w", err)
+		}
+	}
 	h.sitesMu.Lock()
 	sites := make(map[string]*staticserve.Site, len(h.sites))
 	for name, site := range h.sites {

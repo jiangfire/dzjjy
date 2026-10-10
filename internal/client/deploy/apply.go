@@ -19,6 +19,21 @@ type ApplyResult struct {
 	Port       int    `json:"port"`
 	Generation uint64 `json:"generation"`
 	ExpiresAt  int64  `json:"expires_at"`
+	// ContainerID is set for Docker-backed apps.
+	ContainerID string `json:"container_id"`
+	// Isolator reports the applied isolation layer, e.g. "runsc".
+	Isolator string `json:"isolator"`
+	// PublicPath is the unguessable token path a StaticSite is served under
+	// when spec.exposure is configured.
+	PublicPath string `json:"public_path"`
+	// PublishedPorts lists the resolved host-to-container bindings.
+	PublishedPorts []PublishedPortBinding `json:"published_ports"`
+}
+
+// PublishedPortBinding is one resolved host-to-container port mapping.
+type PublishedPortBinding struct {
+	Container int `json:"container"`
+	Host      int `json:"host"`
 }
 
 // ApplyConfig submits one validated YAML document and its optional artifact.

@@ -1,7 +1,7 @@
 # 架构设计
 
-> 文档更新：2026-10-09
-> 说明：同步 Phase 0-2 声明式运行时（YAML/StaticSite/Docker/TTL）后的模块与安全边界
+> 文档更新：2026-10-10
+> 说明：同步 Phase 0-3（声明式运行时 + 闲置暂停、临时 URL、网络映射、Secret、volume、资源配额、gVisor、Kubernetes 导入）后的模块与安全边界
 
 ## 核心模块
 
@@ -19,16 +19,24 @@ internal/
 │   │   └── archive.go        # ZIP/TAR/GZ 解压（单文件/总量/文件数上限，超限报错）
 │   ├── staticserve/      # StaticSite 独立端口的静态文件服务（路径穿越防护、SPA fallback）
 │   ├── dockerbackend/    # Docker runtime template 注册表与容器生命周期（受控标签与挂载）
+│   │   ├── engine.go        # 模板解析、容器创建/停止/删除/恢复
+│   │   └── options.go       # Phase 3：端口映射、Secret 注入、volume、配额、runsc 探测、暂停/恢复
+│   ├── secretstore/     # 平台托管 Secret（值只来自进程环境，AES-GCM 加密落盘，永不进状态/API）
+│   ├── idle/            # 闲置调度器（按 HTTP 空闲时长挂起，挂起可逆）
+│   ├── proxy/           # 临时 URL 代理（不可猜测 token 路径，唤醒后转发）
+│   ├── k8simport/       # Kubernetes Deployment/Service → dzjjy/v1 转换器
 │   ├── ttl/              # 绝对 TTL 调度器（按 expires_at 排序，generation 校验）
 │   ├── auth/             # 认证
 │   │   └── auth.go           # Bearer Token + 时序攻击防护
 │   ├── handler/          # HTTP API
 │   │   ├── handler.go        # 部署/状态/日志等端点与状态恢复
-│   │   └── apply*.go         # 声明式 apply/reconcile 与各 backend 生命周期
+│   │   ├── apply*.go         # 声明式 apply/reconcile 与各 backend 生命周期
+│   │   └── phase3.go         # Phase 3 接线：选项翻译、挂起/恢复、token 暴露
 │   └── state/            # 状态持久化
 │       ├── persist.go        # 原子写入 + SHA256
 │       ├── sync.go           # 事件驱动同步（含终止原因与进程身份）
 │       └── restore.go        # 启动恢复（终态保留、PID 身份校验）
+├── k8simport/         # Kubernetes 清单导入（Deployment/Service → dzjjy/v1）
 └── client/
     └── deploy/           # 客户端部署
         ├── deploy.go         # API 调用封装（legacy multipart）
@@ -178,6 +186,66 @@ Apply 先在独立 staging 目录解包和校验，再激活 artifact。相同 d
 
 `process` backend 直接以服务端用户权限启动进程，**不是安全沙箱**，只适用于可信代码。`docker` backend 仅允许平台维护的 Python 3.12、Node 22、Go 1.24 templates，要求 Linux Docker daemon；workspace 只读挂载且禁止 Docker socket、任意镜像、Dockerfile、自定义 Docker 参数与宿主路径。Docker 不可用时 apply 明确失败，不降级为 process。
 
-Phase 3（闲置暂停、临时 URL、网络/端口映射、Secret、volume、资源配额、gVisor/runsc、Kubernetes 导入）不在当前实现范围内。
+Phase 3（闲置暂停、临时 URL、网络/端口映射、Secret、volume、资源配额、gVisor/runsc、Kubernetes 导入）已在下文「Phase 3 能力」中实现。Phase 4 未定义。
 
 进程状态恢复带 PID 身份校验：启动时持久化进程身份（Linux 为 `/proc` 起始时间，Windows 为父 PID），恢复时比对；不一致说明 PID 已被系统复用，绝不接管。身份缺失（legacy 状态）或平台无法确认时以"未验证"身份接管——状态可见但 stop 不执行 kill。进程树回收跨平台提供：Linux 下子进程放入独立进程组，stop 时整组 SIGKILL；Windows 下使用 `taskkill /T /F` 终止进程树。崩溃与重启耗尽会发出终态事件：状态转为 `failed`、清除 PID 并记录终止原因（`crash` / `max_restart` / `restart_failure`），与 `manual_stop` / `ttl` / `cleanup_failure` 区分。手动 restart 创建新 generation 并从新实例启动时重算 TTL；服务重启后按持久化的绝对 `expires_at` 重建调度，停机期间到期的实例直接清理并标记 `expired`，`expired` 是终态，恢复与调和都不会复活它。
+
+## Phase 3 能力
+
+### 闲置暂停（idle suspend）
+
+`spec.lifecycle.idleTimeout` 声明一个空闲窗口。`internal/server/idle` 维护按 deadline 排序的应用队列，超过窗口未收到流量即调用 `suspendIdleApp`：
+
+- `StaticSite`：关闭 listener，**保留站点目录**（挂起不是删除）
+- Docker：`docker pause` 冻结容器，不删除不重建
+
+挂起后状态转为 `stopped` + `suspended=true`，终止原因记为 `idle`。挂起**可逆**：`suspended` 不是终态，下一次请求经代理触发 `resumeSuspendedApp` 时重新监听端口或 `docker unpause`，并按原 generation 继续服务。
+
+调度器按固定 `pollInterval`（50ms）重新读取时钟而不是睡到 deadline——这样注入的测试时钟和宿主机时钟跳变都能被正确感知。
+
+### 临时 URL（token 暴露）
+
+`spec.exposure` 让 StaticSite 通过平台代理对外提供：站点内容挂在 `/_dzjjy/<token>/` 路径下，token 默认由 `proxy.NewToken()` 用 192 位加密随机数生成，也可由 `spec.exposure.token` 固定。代理只做路径改写后转发给站点自己的 traversal-safe handler，站点文件结构不变。
+
+token 存放在状态文件中（`exposure_token`），服务重启后自动重新注册；stop/TTL/remove 会注销 token。**token 会出现在访问日志中**，这是该方案的已知代价。
+
+### 网络与端口映射
+
+`spec.network.ports[]` 声明 `container` / `host` 端口对。`host` 省略或为 `0` 时由 Docker 分配临时端口，dzjjy 通过 `docker port` 反查真实绑定并写入 `published_ports`，使状态和 API 返回的是**实际**端口而非请求值。仍只允许平台维护的 bridge 网络，不开放自定义网络、host 路径挂载或 Docker socket。
+
+### Secret
+
+`spec.secrets[]` 只声明**键名**，值由 `internal/server/secretstore` 从服务端进程环境解析（AES-GCM 加密后可落盘，密钥由 operator 另行提供）。约束：
+
+- Secret 值**永不**写入 desired config、状态文件或任何 API 响应
+- 缺失的键会让 apply 直接失败，不会静默启动一个没有该变量的容器
+- `spec.secrets[].env` 未指定时从键名派生合法环境变量名
+
+### Volume
+
+`spec.volumes[]` 只接受**命名卷**，由 dzjjy 打上自有标签后创建，容器以只读 workspace + 指定卷挂载启动。宿主路径挂载依然不开放。Kubernetes 导入只会把 `emptyDir` 翻译成命名卷，`secret`/`configMap` 卷会被记录为导入 note 并跳过。
+
+### 资源配额
+
+`spec.resources` 支持 `memory`、`memorySwap`、`cpus`、`pids`，映射到 Docker 的 `--memory` / `--memory-swap` / `--cpus` / `--pids-limit`。内存下限 6m，CPU 上限 64。StaticSite 不接受任何资源字段。
+
+### gVisor / runsc 隔离
+
+`spec.sandbox.isolator: runsc` 在 Docker 后端之上叠加 gVisor 隔离层：
+
+- apply 前用 `docker info --format '{{json .Runtimes}}'` 探测 runsc 是否已注册
+- **不可用时 apply 明确失败（HTTP 501），绝不降级为默认 runtime**
+- 容器以 `--runtime runsc` 创建，并保留 dzjjy 自有标签，`stop/pause/unpause` 全部走同样的所有权校验
+
+CI 的 `gVisor E2E (runsc)` job 会下载 runsc、写入 `/etc/docker/daemon.json`、重启 daemon，再用真实容器验证运行时的确实是 runsc 并跑通完整生命周期。
+
+### Kubernetes 导入
+
+`dzjjy-client import-k8s -file manifest.yaml` 把 Deployment/Service 转换成 `dzjjy/v1`，产出的清单会先经过 dzjjy 自己的严格解析器校验才输出。设计原则是**不静默降级**：
+
+- 任意镜像、多容器 Pod、无法表示的 volume 源直接报错
+- replicas>1、`envFrom`、Secret/ConfigMap 卷、NodePort 之外的 Service 类型等记为 note，明确告知被降级
+- 资源配额按 Kubernetes 语义归一（`256Mi` → `256m`、`500m` CPU → `0.5`）
+- `secretKeyRef` 翻译成 `spec.secrets[]` 引用而非明文
+
+导入是**单向转换**，不连接集群；集群侧连通性由可选的验证 job 覆盖。

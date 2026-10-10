@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jiangfire/dzjjy/internal/server/appconfig"
+	"github.com/jiangfire/dzjjy/internal/server/proxy"
 	"github.com/jiangfire/dzjjy/internal/server/state"
 	"github.com/jiangfire/dzjjy/internal/server/staticserve"
 )
@@ -19,15 +20,28 @@ func (h *Handler) recordStaticSite(document *appconfig.Document, siteRoot string
 		ttlDuration, _ = time.ParseDuration(document.Spec.Lifecycle.TTL)
 		expiresAt = time.Now().Add(ttlDuration).Unix()
 	}
+	idleSeconds := 0
+	if timeout := idleTimeout(document); timeout > 0 {
+		idleSeconds = int(timeout.Seconds())
+	}
+	exposureToken := ""
+	if document.Spec.Exposure != nil {
+		exposureToken = document.Spec.Exposure.Token
+	}
 	if h.syncManager != nil {
 		if old := h.syncManager.GetState().Apps[document.Metadata.Name]; old != nil {
 			generation = old.Generation + 1
+			if exposureToken == "" {
+				exposureToken = old.ExposureToken
+			}
 		}
 		config, _ := json.Marshal(document)
 		h.syncManager.ReplaceApp(document.Metadata.Name, &state.AppState{
 			DesiredConfig: string(config), Generation: generation, Backend: "static",
 			Port: port, Status: state.StatusRunning, WorkPath: siteRoot,
 			StartTime: time.Now().Unix(), ExpiresAt: expiresAt,
+			IdleTimeoutSeconds: idleSeconds, ExposureToken: exposureToken,
+			LastActivityUnix: time.Now().Unix(),
 		})
 		h.persistState()
 	}
@@ -84,6 +98,18 @@ func (h *Handler) restoreStaticSites(data *state.StateData) {
 		h.sitesMu.Lock()
 		h.sites[appName] = site
 		h.sitesMu.Unlock()
+		if app.ExposureToken != "" {
+			if server, err := h.ensureProxy(); err == nil {
+				_ = server.Register(app.ExposureToken, proxy.Target{
+					AppName:    appName,
+					Generation: app.Generation,
+					Upstream:   &siteUpstream{site: site},
+				})
+			}
+		}
+		if app.IdleTimeoutSeconds > 0 {
+			h.idleTracker.Schedule(appName, app.Generation, time.Duration(app.IdleTimeoutSeconds)*time.Second)
+		}
 		if app.ExpiresAt > 0 {
 			h.ttlScheduler.Schedule(appName, app.Generation, time.Unix(app.ExpiresAt, 0), h.expireApp)
 		}
@@ -117,6 +143,9 @@ func (h *Handler) restoreDockerApps(data *state.StateData) {
 		h.dockerMu.Lock()
 		h.dockerApps[appName] = dockerAppRecord{containerID: app.ContainerID, root: app.WorkPath, generation: app.Generation}
 		h.dockerMu.Unlock()
+		if app.IdleTimeoutSeconds > 0 {
+			h.idleTracker.Schedule(appName, app.Generation, time.Duration(app.IdleTimeoutSeconds)*time.Second)
+		}
 		if app.ExpiresAt > 0 {
 			h.ttlScheduler.Schedule(appName, app.Generation, time.Unix(app.ExpiresAt, 0), h.expireApp)
 		}

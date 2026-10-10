@@ -50,6 +50,12 @@ func (s *Site) Root() string {
 	return s.root
 }
 
+// ServeHTTP serves a single request against the site root. It lets the token
+// proxy reuse the traversal-safe file handler without owning a listener.
+func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r)
+}
+
 func (s *Site) Close() error {
 	var err error
 	s.once.Do(func() {

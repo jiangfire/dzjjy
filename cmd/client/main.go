@@ -31,6 +31,8 @@ func main() {
 		applyCmd()
 	case "validate":
 		validateCmd()
+	case "import-k8s":
+		importK8sCmd()
 	case "stop":
 		stopCmd()
 	case "restart":
@@ -394,6 +396,7 @@ func printUsage() {
 	fmt.Println("  deploy   Deploy application to server (legacy)")
 	fmt.Println("  apply    Apply a dzjjy YAML configuration")
 	fmt.Println("  validate Validate a dzjjy YAML configuration locally")
+	fmt.Println("  import-k8s Convert a Kubernetes Deployment/Service into dzjjy/v1")
 	fmt.Println("  start    Start a stopped application")
 	fmt.Println("  stop     Stop running application")
 	fmt.Println("  restart  Restart running application")

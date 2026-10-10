@@ -44,6 +44,11 @@
 - 日志查看：按应用查询日志，支持 `lines` 参数，客户端支持 `--follow` 轮询跟随。
 - 状态持久化：可通过 `-state` 启用状态文件，服务重启后恢复应用元数据，并按配置自动重启。
 - 基础安全控制：Bearer Token 认证、路径/输入校验。
+- 闲置暂停：`lifecycle.idleTimeout` 到期自动挂起，下次请求自动唤醒。
+- 临时 URL：`exposure` 用不可猜测的 token 路径发布静态站点。
+- 容器能力：端口映射、Secret 注入、命名卷、资源配额（内存/CPU/PIDs）。
+- 沙箱隔离：可选 gVisor `runsc`，不可用时明确失败而不静默降级。
+- Kubernetes 导入：`import-k8s` 把 Deployment/Service 转成 `dzjjy/v1`。
 
 ## 快速开始
 
@@ -101,6 +106,7 @@ GET /health
 - `deploy`（legacy multipart 部署）
 - `apply`（声明式 YAML 部署）
 - `validate`（本地校验 YAML，不连接服务端）
+- `import-k8s`（Kubernetes Deployment/Service 转 `dzjjy/v1`）
 - `start`
 - `stop`
 - `restart`
@@ -166,7 +172,62 @@ artifact 路径相对于 YAML 文件。`StaticSite` 配置可使用 `spec.port`�
 
 Docker sandbox 只接受平台维护的 Python 3.12、Node 22、Go 1.24 runtime template；需要 Linux Docker daemon。任意镜像、Dockerfile、Docker 参数、挂载和宿主路径均不开放，Docker 不可用时会明确失败，不会回退到宿主机进程。
 
-**安全边界：** `sandbox: {type: process}` 直接以服务端用户权限运行，并非安全隔离或恶意代码沙箱。请只用于可信应用；需要隔离时选择受控 Docker template。
+**安全边界：** `sandbox: {type: process}` 直接以服务端用户权限运行，并非安全隔离或恶意代码沙箱。请只用于可信应用；需要隔离时选择受控 Docker template 或 `sandbox.isolator: runsc`。
+
+### Phase 3 能力
+
+```yaml
+apiVersion: dzjjy/v1
+kind: App
+metadata:
+  name: demo-api
+spec:
+  artifact: app.tar.gz
+  runtime: {type: python, version: "3.12"}
+  command: [python, "app.py", "--port", "9000"]
+  sandbox: {type: docker, isolator: runsc}   # 可选 gVisor 隔离层
+  network:
+    ports:
+      - {container: 9000}                    # host 省略时由 Docker 分配
+  secrets:
+    - {key: "web/api-key", env: API_KEY}     # 值来自服务端环境，不写进清单
+  volumes:
+    - {name: demo-cache, path: /cache}       # 仅命名卷，不接受宿主路径
+  resources:
+    memory: 512m
+    cpus: "1.5"
+    pids: 256
+  lifecycle:
+    ttl: 24h
+    idleTimeout: 30m                         # 空闲 30 分钟后挂起，下次请求唤醒
+```
+
+`StaticSite` 可用 `spec.exposure` 发布到不可猜测的 token 路径：
+
+```yaml
+apiVersion: dzjjy/v1
+kind: StaticSite
+metadata:
+  name: demo-site
+spec:
+  artifact: dist.zip
+  port: 0                 # 自动分配
+  exposure: {}            # 生成随机 token；也可用 exposure.token 固定
+  lifecycle:
+    idleTimeout: 10m
+```
+
+apply 成功后 `data.public_path` 返回形如 `/_dzjjy/<token>/` 的公开路径。token 会保存在状态文件中，服务重启后继续有效。
+
+Secret 只声明键名，值由服务端进程环境提供；缺失的键会让 apply 明确失败，不会静默启动缺少变量的容器。
+
+Kubernetes 导入：
+
+```bash
+./build/dzjjy-client import-k8s -file k8s/deployment.yaml -out app.yaml
+```
+
+转换器只接受平台维护的 runtime 镜像与单容器 Pod；无法表示的配置直接报错，可降级的（多副本、`envFrom`、Secret 卷等）会输出 note 说明。
 
 ### 常用管理命令
 

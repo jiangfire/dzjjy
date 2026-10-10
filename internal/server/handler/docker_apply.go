@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/jiangfire/dzjjy/internal/server/appconfig"
+	"github.com/jiangfire/dzjjy/internal/server/dockerbackend"
 	"github.com/jiangfire/dzjjy/internal/server/state"
 )
 
@@ -57,7 +59,7 @@ func (h *Handler) applyDocker(w http.ResponseWriter, r *http.Request, document *
 	}
 	if oldState != nil && oldState.Status == state.StatusRunning {
 		if oldState.DesiredConfig == string(canonical) {
-			h.sendApplyDockerResult(w, document, oldState.Generation, oldState.ExpiresAt, oldState.ContainerID)
+			h.sendApplyDockerResult(w, document, oldState.Generation, oldState.ExpiresAt, oldState.ContainerID, oldState.PublishedPorts)
 			return
 		}
 		h.sendError(w, "application is running; stop it before applying a changed configuration", http.StatusConflict)
@@ -83,14 +85,32 @@ func (h *Handler) applyDocker(w http.ResponseWriter, r *http.Request, document *
 		generation = oldState.Generation + 1
 	}
 	command := append([]string(nil), document.Spec.Command...)
-	containerID, err := h.dockerEngine.Start(r.Context(), document.Metadata.Name, generation, document.Spec.Runtime.Type, document.Spec.Runtime.Version, appDir, command)
+	options, err := h.buildDockerOptions(document)
 	if err != nil {
 		_ = os.RemoveAll(appDir)
 		_ = os.Rename(backupDir, appDir)
-		h.sendError(w, err.Error(), http.StatusServiceUnavailable)
+		h.sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	containerID, bindings, err := h.dockerEngine.StartWithOptions(r.Context(), document.Metadata.Name, generation, document.Spec.Runtime.Type, document.Spec.Runtime.Version, appDir, command, options)
+	if err != nil {
+		_ = os.RemoveAll(appDir)
+		_ = os.Rename(backupDir, appDir)
+		status := http.StatusServiceUnavailable
+		var isolatorErr *dockerbackend.ErrIsolatorUnavailable
+		if errors.As(err, &isolatorErr) {
+			// An unavailable isolator is a configuration problem, not an
+			// outage; dzjjy never silently degrades to the default runtime.
+			status = http.StatusNotImplemented
+		}
+		h.sendError(w, err.Error(), status)
 		return
 	}
 	_ = os.RemoveAll(backupDir)
+	publishedPorts := make([]state.PublishedPort, 0, len(bindings))
+	for _, binding := range bindings {
+		publishedPorts = append(publishedPorts, state.PublishedPort{Container: binding.Container, Host: binding.Host})
+	}
 	h.dockerMu.Lock()
 	h.dockerApps[document.Metadata.Name] = dockerAppRecord{containerID: containerID, root: appDir, generation: generation}
 	h.dockerMu.Unlock()
@@ -100,27 +120,42 @@ func (h *Handler) applyDocker(w http.ResponseWriter, r *http.Request, document *
 		expiresAt = time.Now().Add(ttlDuration).Unix()
 		h.ttlScheduler.Schedule(document.Metadata.Name, generation, time.Now().Add(ttlDuration), h.expireApp)
 	}
+	idleSeconds := 0
+	if timeout := idleTimeout(document); timeout > 0 {
+		idleSeconds = int(timeout.Seconds())
+		h.idleTracker.Schedule(document.Metadata.Name, generation, timeout)
+	}
 	if h.syncManager != nil {
 		h.syncManager.ReplaceApp(document.Metadata.Name, &state.AppState{
 			DesiredConfig: string(canonical), Generation: generation, Backend: "docker",
 			ContainerID: containerID, WorkPath: appDir, Status: state.StatusRunning,
 			StartTime: time.Now().Unix(), ExpiresAt: expiresAt,
+			PublishedPorts: publishedPorts, Isolator: options.Isolator,
+			IdleTimeoutSeconds: idleSeconds, LastActivityUnix: time.Now().Unix(),
 		})
 		h.persistState()
 	}
-	h.sendApplyDockerResult(w, document, generation, expiresAt, containerID)
+	h.sendApplyDockerResult(w, document, generation, expiresAt, containerID, publishedPorts)
 }
 
-func (h *Handler) sendApplyDockerResult(w http.ResponseWriter, document *appconfig.Document, generation uint64, expiresAt int64, containerID string) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "configuration applied", "data": map[string]any{
+func (h *Handler) sendApplyDockerResult(w http.ResponseWriter, document *appconfig.Document, generation uint64, expiresAt int64, containerID string, publishedPorts []state.PublishedPort) {
+	data := map[string]any{
 		"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running",
 		"container_id": containerID, "generation": generation, "expires_at": expiresAt,
-	}})
+	}
+	if len(publishedPorts) > 0 {
+		data["published_ports"] = publishedPorts
+	}
+	if document.Spec.Sandbox.Isolator != "" {
+		data["isolator"] = document.Spec.Sandbox.Isolator
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "configuration applied", "data": data})
 }
 
 func (h *Handler) stopDockerApp(appName, reason string, removeFiles bool) (bool, error) {
 	h.ttlScheduler.Cancel(appName)
+	h.idleTracker.Cancel(appName)
 	h.dockerMu.Lock()
 	record, ok := h.dockerApps[appName]
 	if ok {

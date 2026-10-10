@@ -9,12 +9,12 @@ import (
 
 // AppEvent 应用事件
 type AppEvent struct {
-	Type      string         `json:"type"`      // 事件类型
-	AppName   string         `json:"app_name"`  // 应用名称
-	Config    *ProcessConfig `json:"config"`    // 配置（用于register/config_change）
-	PID       int            `json:"pid"`       // 进程ID（用于start/restart）
-	Timestamp int64          `json:"timestamp"` // 时间戳
-	Reason    string         `json:"reason,omitempty"`  // 终止原因（stop/failed）
+	Type      string         `json:"type"`               // 事件类型
+	AppName   string         `json:"app_name"`           // 应用名称
+	Config    *ProcessConfig `json:"config"`             // 配置（用于register/config_change）
+	PID       int            `json:"pid"`                // 进程ID（用于start/restart）
+	Timestamp int64          `json:"timestamp"`          // 时间戳
+	Reason    string         `json:"reason,omitempty"`   // 终止原因（stop/failed）
 	StartID   string         `json:"start_id,omitempty"` // 进程启动身份（start/restart）
 }
 
@@ -203,7 +203,7 @@ func cloneStateData(data *StateData) *StateData {
 		}
 
 		// 深拷贝应用状态
-		copy.Apps[name] = &AppState{
+		copied := &AppState{
 			Config: config, PID: appState.PID, StartTime: appState.StartTime,
 			RestartCount: appState.RestartCount, Status: appState.Status,
 			WorkPath: appState.WorkPath, LogPath: appState.LogPath,
@@ -213,7 +213,19 @@ func cloneStateData(data *StateData) *StateData {
 			TerminationReason: appState.TerminationReason,
 			ProcessStartID:    appState.ProcessStartID,
 			IdentityVerified:  appState.IdentityVerified,
+			// Phase 3 fields must be carried through explicitly: this is a
+			// field-by-field copy, so anything omitted here would be silently
+			// dropped on every state clone.
+			Isolator:           appState.Isolator,
+			ExposureToken:      appState.ExposureToken,
+			IdleTimeoutSeconds: appState.IdleTimeoutSeconds,
+			Suspended:          appState.Suspended,
+			LastActivityUnix:   appState.LastActivityUnix,
 		}
+		if appState.PublishedPorts != nil {
+			copied.PublishedPorts = append([]PublishedPort(nil), appState.PublishedPorts...)
+		}
+		copy.Apps[name] = copied
 	}
 
 	return copy

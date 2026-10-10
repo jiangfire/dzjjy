@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jiangfire/dzjjy/internal/server/appconfig"
 	"github.com/jiangfire/dzjjy/internal/server/archive"
@@ -121,6 +122,29 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	generation, expiresAt := h.recordStaticSite(document, staging, site.Port())
 	response := map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running", "port": site.Port(), "generation": generation, "expires_at": expiresAt}
+	// A site with spec.exposure is published behind the token proxy so the raw
+	// port is not the way people reach it.
+	if document.Spec.Exposure != nil {
+		h.proxyMu.Lock()
+		previous := ""
+		if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil {
+			previous = app.ExposureToken
+		}
+		h.proxyMu.Unlock()
+		publicPath, err := h.publishSite(document.Metadata.Name, document, site, generation, previous)
+		if err != nil {
+			h.sendError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil {
+				app.ExposureToken = strings.TrimSuffix(publicPath, "/")
+				h.syncManager.ReplaceApp(document.Metadata.Name, app)
+				h.persistState()
+			}
+		}
+		response["public_path"] = publicPath
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "configuration applied", "data": response}); err != nil {
 		slog.Warn("failed to encode apply response", "error", err)

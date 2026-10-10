@@ -17,7 +17,10 @@ import (
 	"github.com/jiangfire/dzjjy/internal/server/appconfig"
 	"github.com/jiangfire/dzjjy/internal/server/archive"
 	"github.com/jiangfire/dzjjy/internal/server/dockerbackend"
+	"github.com/jiangfire/dzjjy/internal/server/idle"
+	"github.com/jiangfire/dzjjy/internal/server/proxy"
 	"github.com/jiangfire/dzjjy/internal/server/runtime"
+	"github.com/jiangfire/dzjjy/internal/server/secretstore"
 	"github.com/jiangfire/dzjjy/internal/server/state"
 	"github.com/jiangfire/dzjjy/internal/server/staticserve"
 	"github.com/jiangfire/dzjjy/internal/server/ttl"
@@ -38,15 +41,25 @@ type Handler struct {
 	dockerEngine *dockerbackend.Engine
 	dockerMu     sync.Mutex
 	dockerApps   map[string]dockerAppRecord
+	// Phase 3 controls.
+	secrets     *secretstore.Store
+	idleTracker *idle.Tracker
+	proxyMu     sync.Mutex
+	proxyServer *proxy.Proxy
+	resumeMu    sync.Mutex
+	resuming    map[string]bool
 }
 
 // NewHandler 创建处理器（不带状态持久化）
 func NewHandler(uploadDir, workDir, logDir string) *Handler {
-	return &Handler{
+	h := &Handler{
 		multiManager: runtime.NewMultiManager(logDir), uploadDir: uploadDir,
 		workDir: workDir, logDir: logDir, sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
 		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
+		secrets: secretstore.New(nil), resuming: make(map[string]bool),
 	}
+	h.idleTracker = idle.New(nil, h.suspendIdleApp)
+	return h
 }
 
 // NewHandlerWithState 创建支持状态持久化的处理器
@@ -55,7 +68,9 @@ func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler 
 		uploadDir: uploadDir, workDir: workDir, logDir: logDir,
 		sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
 		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
+		secrets: secretstore.New(nil), resuming: make(map[string]bool),
 	}
+	h.idleTracker = idle.New(nil, h.suspendIdleApp)
 	h.stateStore = state.NewStateStore(stateFile)
 	h.syncManager = state.NewSyncManager(h.stateStore)
 	h.restoreMgr = state.NewRestoreManager(h.stateStore, h.syncManager)
@@ -64,6 +79,15 @@ func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler 
 	h.multiManager = runtime.NewMultiManagerWithState(logDir, h)
 
 	return h
+}
+
+// SetSecrets installs the platform secret store used to resolve spec.secrets.
+// Secret values never reach the state file or any API response.
+func (h *Handler) SetSecrets(store *secretstore.Store) {
+	if store == nil {
+		return
+	}
+	h.secrets = store
 }
 
 // OnAppEvent 实现 StateNotifier 接口，接收 Manager 的事件并转发给 SyncManager

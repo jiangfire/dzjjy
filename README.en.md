@@ -45,6 +45,11 @@ Goals:
 - Log query with `lines`; the client also supports `--follow`.
 - Optional state persistence via `-state`, with metadata restoration and configured auto-restart.
 - Basic security controls: Bearer token auth, path/input validation.
+- Idle suspend: `lifecycle.idleTimeout` suspends the app and wakes it on the next request.
+- Temporary URLs: `exposure` publishes a static site behind an unguessable token path.
+- Container controls: port mapping, secret injection, named volumes, resource limits.
+- Sandbox isolation: optional gVisor `runsc`; it fails loudly instead of degrading.
+- Kubernetes import: `import-k8s` converts a Deployment/Service into `dzjjy/v1`.
 
 ## Quick Start
 
@@ -102,6 +107,7 @@ Available commands:
 - `deploy` (legacy multipart deploy)
 - `apply` (declarative YAML deploy)
 - `validate` (local YAML validation, no server required)
+- `import-k8s` (convert a Kubernetes Deployment/Service into `dzjjy/v1`)
 - `start`
 - `stop`
 - `restart`
@@ -161,6 +167,61 @@ Available commands:
 ```
 
 If `-app` is omitted, the default app name is `default`.
+
+### Phase 3 capabilities
+
+```yaml
+apiVersion: dzjjy/v1
+kind: App
+metadata:
+  name: demo-api
+spec:
+  artifact: app.tar.gz
+  runtime: {type: python, version: "3.12"}
+  command: [python, "app.py", "--port", "9000"]
+  sandbox: {type: docker, isolator: runsc}   # optional gVisor layer
+  network:
+    ports:
+      - {container: 9000}                    # host port assigned when omitted
+  secrets:
+    - {key: "web/api-key", env: API_KEY}     # value comes from the server env
+  volumes:
+    - {name: demo-cache, path: /cache}       # named volumes only
+  resources:
+    memory: 512m
+    cpus: "1.5"
+    pids: 256
+  lifecycle:
+    ttl: 24h
+    idleTimeout: 30m                         # suspend after 30m idle
+```
+
+`StaticSite` can be published behind an unguessable token path:
+
+```yaml
+apiVersion: dzjjy/v1
+kind: StaticSite
+metadata:
+  name: demo-site
+spec:
+  artifact: dist.zip
+  port: 0                 # auto-assigned
+  exposure: {}            # random token; pin it with exposure.token
+  lifecycle:
+    idleTimeout: 10m
+```
+
+After a successful apply, `data.public_path` holds the public path (`/_dzjjy/<token>/`). The token is persisted, so it survives a server restart.
+
+Secrets declare only the key; the value is read from the server process environment. A missing key fails the apply instead of silently starting a container without the variable.
+
+Kubernetes import:
+
+```bash
+./build/dzjjy-client import-k8s -file k8s/deployment.yaml -out app.yaml
+```
+
+The converter accepts only maintained runtime images and single-container pods; anything it cannot represent is an error, and anything it can only degrade is reported as a note.
 
 ## API Overview
 

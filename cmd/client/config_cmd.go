@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/jiangfire/dzjjy/internal/client/deploy"
+	"github.com/jiangfire/dzjjy/internal/k8simport"
 	"github.com/jiangfire/dzjjy/internal/server/appconfig"
 )
 
@@ -63,7 +64,19 @@ func applyCmd() {
 	if result.ExpiresAt != 0 {
 		attrs = append(attrs, "expires_at", result.ExpiresAt)
 	}
+	if result.Isolator != "" {
+		attrs = append(attrs, "isolator", result.Isolator)
+	}
+	if result.PublicPath != "" {
+		attrs = append(attrs, "public_path", result.PublicPath)
+	}
+	for _, binding := range result.PublishedPorts {
+		attrs = append(attrs, fmt.Sprintf("published_port_%d", binding.Container), binding.Host)
+	}
 	slog.Info("configuration applied", attrs...)
+	if result.PublicPath != "" {
+		fmt.Printf("public URL path: %s\n", result.PublicPath)
+	}
 }
 
 func validateCmd() {
@@ -90,6 +103,54 @@ func validateCmd() {
 		}
 	}
 	fmt.Printf("configuration valid: %s (%s)\n", document.Metadata.Name, document.Kind)
+}
+
+func importK8sCmd() {
+	fs := flag.NewFlagSet("import-k8s", flag.ExitOnError)
+	file := fs.String("file", "", "Kubernetes manifest file (required)")
+	out := fs.String("out", "", "write the dzjjy manifest to this file instead of stdout")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		slog.Error("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
+	if *file == "" {
+		slog.Error("file is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+	data, err := os.ReadFile(*file) // #nosec G304 - local CLI reads the user-specified manifest path
+	if err != nil {
+		slog.Error("failed to read manifest", "error", err)
+		os.Exit(1)
+	}
+	manifests, err := k8simport.Parse(data)
+	if err != nil {
+		slog.Error("invalid Kubernetes manifest", "error", err)
+		os.Exit(1)
+	}
+	document, err := k8simport.Convert(manifests)
+	if err != nil {
+		slog.Error("import failed", "error", err)
+		os.Exit(1)
+	}
+	// The generated manifest must satisfy dzjjy's own strict parser before it
+	// is shown to the operator, so an unusable import fails fast.
+	if _, err := appconfig.Parse([]byte(document.YAML)); err != nil {
+		slog.Error("generated manifest is not a valid dzjjy/v1 document", "error", err)
+		os.Exit(1)
+	}
+	for _, note := range document.Notes {
+		slog.Warn("import note", "detail", note)
+	}
+	if *out == "" {
+		fmt.Print(document.YAML)
+		return
+	}
+	if err := os.WriteFile(*out, []byte(document.YAML), 0600); err != nil {
+		slog.Error("failed to write manifest", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("manifest converted", "source", document.Source, "out", *out, "notes", len(document.Notes))
 }
 
 func readConfig(path string) ([]byte, *appconfig.Document, error) {
