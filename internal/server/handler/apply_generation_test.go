@@ -71,7 +71,7 @@ func TestApplyProcessChangedConfigWhileRunningReturnsConflict(t *testing.T) {
 	require.Equal(t, float64(1), first["generation"])
 
 	// 运行中改配置：必须明确冲突，而不是静默替换。
-	changed := append([]string(nil), liveSleeperCommand()...)
+	var changed []string
 	if goruntime.GOOS == "windows" {
 		changed = []string{"ping", "-n", "31", "127.0.0.1"}
 	} else {
