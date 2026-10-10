@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.25.8"
+  GO_VERSION: "1.26.9"
   GOCACHE: ${{ github.workspace }}/.gocache
 
 jobs:
@@ -46,7 +46,8 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          # Pin below latest: govulncheck v1.8+ requires Go >= 1.26, CI runs 1.25.8.
+          # Pinned (not @latest) so the scanner version stays reproducible;
+          # v1.8+ requires Go >= 1.26, satisfied by the toolchain above.
           go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
