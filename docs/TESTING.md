@@ -34,9 +34,20 @@ go test -race ./internal/server/...
 - 交叉平台验证：GitHub Actions 会在 Linux、Windows、macOS 上做构建冒烟检查
 - 质量巡检：`Quality` workflow 会额外输出覆盖率摘要并校验 `go.mod` / `go.sum`
 
-## Docker E2E 状态（如实声明）
+## Docker E2E 状态
 
-仓库内所有 Docker 相关测试（`internal/server/dockerbackend`、`handler/docker_apply*`）都基于 fake runner 的**单元/契约测试**，验证调用序列、标签校验、挂载约束与错误路径。**未在任何真实 Docker daemon 上执行过 E2E**；拥有 Linux Docker daemon 的环境应手动验证 create/start/log/stop/remove 全链路后，才能认为 Docker backend 经过 E2E 验证。
+仓库内有两种 Docker 测试：
+
+- **单元/契约测试**（默认 `go test ./...` 的一部分）：`internal/server/dockerbackend`、`handler/docker_apply*` 基于 fake runner，验证调用序列、标签校验、挂载约束与错误路径。
+- **真实 daemon E2E**（CI 强制执行）：CI 的 `Docker E2E (real daemon)` job 在 ubuntu runner 上用真实 Docker daemon 运行 `internal/server/dockerbackend/e2e_test.go`（`docker_e2e` 构建标签），覆盖每个一等 runtime template 的完整生命周期（pull → create → start → logs → stop → remove）、stop 超时 kill 兜底、无 dzjjy 标签容器的所有权拒绝、以及服务重启恢复（StartExisting）。
+
+本地复跑（需要 Docker daemon 且处于 Linux 容器模式，Docker Desktop 默认即是）：
+
+```bash
+go test -tags=docker_e2e -timeout 20m -v -run 'TestE2E' ./internal/server/dockerbackend/...
+```
+
+无 daemon 时测试会显式 skip，不会误报为通过。
 
 ## Phase 0-2 关键回归场景
 

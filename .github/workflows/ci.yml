@@ -72,6 +72,28 @@ jobs:
           path: coverage.out
           retention-days: 7
 
+  docker-e2e:
+    name: Docker E2E (real daemon)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Real-daemon E2E for the Docker backend: managed lifecycle for every
+      # runtime template (pull/create/start/logs/stop/remove), stop-timeout
+      # kill fallback, unlabelled-container ownership guard, and restart
+      # recovery. Excluded from the main test run via the docker_e2e build tag
+      # because it pulls template images and takes minutes.
+      - name: Run Docker E2E
+        run: go test -tags=docker_e2e -timeout 20m -v -run 'TestE2E' ./internal/server/dockerbackend/...
+
   cross-platform-build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

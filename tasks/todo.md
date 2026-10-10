@@ -45,7 +45,9 @@
   - Acceptance: controlled Python/Node/Go templates; explicit unavailable/platform errors; labels and restricted artifact handling; no fallback.
   - Verify: backend contract tests; real Docker daemon E2E only when daemon exists.
   - Files: new docker/backend packages and integration points
-  - 注：仅 fake runner 契约测试，真实 daemon E2E 未执行（已在 `docs/TESTING.md` 如实声明）。
+  - 2026-10-10 更新：真实 daemon E2E 已落地 CI——`docker_e2e` 构建标签的 e2e_test.go 覆盖
+    全模板生命周期、stop 超时 kill、无标签容器拒绝、重启恢复，由 CI 的
+    `Docker E2E (real daemon)` job（ubuntu runner）强制执行；本地无 daemon 时显式 skip。
 
 - [x] Task 8: TTL and generation-aware persistence/recovery
   - Acceptance: absolute expires_at, restart/apply generation semantics, expired terminal state, distinct reasons, scheduler recovery.
@@ -60,6 +62,7 @@
   - Verify: docs inspection, `go test ./...`, `go vet ./...`, cross-build checks, `git diff --check`.
   - Files: `docs/*`, `README*`, changed implementation/tests
   - 2026-10-09 补齐：ARCHITECTURE.md 模块树与身份/进程树/终态语义更新；TESTING.md 增补
-    Docker E2E 未验证声明与 Phase 0-2 回归场景；README 中英文命令清单补 apply/validate。
+    Docker E2E 状态声明（2026-10-10 起已在 CI 强制执行，见 Task 7）与 Phase 0-2 回归场景；
+    README 中英文命令清单补 apply/validate。
     验证：`go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./...`、
     `git diff --check` 全部通过；`go test -race` 因本机 CGO_ENABLED=0 无法运行（如实说明）。
