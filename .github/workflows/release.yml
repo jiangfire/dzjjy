@@ -50,13 +50,20 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # Pinned (not @latest), matching CI, so the scanner version stays
+          # reproducible; v1.8+ requires Go >= 1.26, satisfied above.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
       - name: Run gosec
         run: |
+          # Keep in sync with CI: G703 (taint-based path traversal) is excluded
+          # because user input reaching file paths is gated by validateAppName /
+          # safeExtractPath / filepath.Rel containment checks that taint analysis
+          # cannot track; traversal behavior is covered by dedicated tests in
+          # archive/staticserve/handler.
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec ./...
+          gosec -exclude=G703 ./...
 
   build-release:
     name: Build Release
