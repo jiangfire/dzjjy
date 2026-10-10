@@ -17,6 +17,16 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Bare coverage profiles written to the repo root by manual
+# `go test -coverprofile=<name>` runs. These have no extension, so the
+# rules above (coverage.* requires a dot) do not catch them.
+/coverage
+/deploy
+/final
+/handler
+/runtime
+/state
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -40,8 +50,5 @@ logs/
 internal/runtime/test-logs/
 nul
 
-# claude
-IMPLEMENTATION_PLAN.md
-PROJECT_PROMPT.md
-.claude/
+# Build output
 build/

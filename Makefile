@@ -256,7 +256,7 @@ docs: ## 生成文档信息
 	@echo "  - docs/ARCHITECTURE.md"
 	@echo "  - docs/TESTING.md"
 	@echo "  - docs/DEVELOPMENT.md"
-	@echo "  - docs/PLAN.md"
+	@echo "  - docs/RELEASE.md"
 	@echo ""
 	@echo "Quick Start:"
 	@echo "  1. make build          # Build binaries"

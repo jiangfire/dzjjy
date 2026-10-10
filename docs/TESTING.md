@@ -1,6 +1,6 @@
 # 测试指南
 
-> 文档更新：2026-03-21
+> 文档更新：2026-10-10
 > 说明：移除易过时的静态统计，统一以当前仓库 workflow 和测试命令为准
 
 ## 快速运行
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.8'
+          go-version: '1.26.9'
           cache: true
 
       - name: Run tests with coverage

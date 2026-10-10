@@ -234,14 +234,13 @@ make fmt         # 代码格式化
 make ci          # 本地 CI 流程
 ```
 
-当前 GitHub Actions 基线使用 Go `1.25.8` 执行 CI / Release / Quality workflow。
+当前 GitHub Actions 基线使用 Go `1.26.9` 执行 CI / Release / Quality workflow。
 
 相关文档：
 
 - `docs/ARCHITECTURE.md`
 - `docs/DEVELOPMENT.md`
 - `docs/TESTING.md`
-- `docs/PLAN.md`
 - `docs/RELEASE.md`
 
 ## 注意事项
