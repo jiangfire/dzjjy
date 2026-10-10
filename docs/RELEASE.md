@@ -2,15 +2,17 @@
 
 > 文档更新：2026-10-10
 > 最新正式版本：`v1.1.0`
+> 待发布版本：`v1.2.0`（内容已合入 `main`，尚未打标签）
 
 ## 当前发布基线
 
 - 发布分支：`main`
-- 发布触发：推送语义化版本标签，例如 `v1.1.0`
+- 发布触发：推送语义化版本标签，例如 `v1.2.0`
 - 发布 workflow：`.github/workflows/release.yml`
 - 当前 workflow Go 版本：`1.26.9`
 - 当前最新正式标签：`v1.1.0`
 - `v1.1.0` 对应提交：`5bd16235d41b5720df7cba87576024e931808e2c`
+- 下一个次版本号建议：`v1.2.0`（Phase 0-2 为向后兼容的功能新增）
 
 ## CI/CD 概览
 
@@ -156,6 +158,45 @@ git diff go.mod go.sum
   - 增强压缩包与日志模块的边界处理
 
 > 注：v1.1.0 之后 `main` 分支继续推进了 Phase 0-2 声明式运行时、TTL、Docker 后端等改动，尚未打新标签。
+
+## 待发布：v1.2.0（内容已在 `main`，未打标签）
+
+### 变更摘要
+
+自 `v1.1.0`（`5bd1623`）以来的提交：
+
+- `8532622` feat: implement phase 0-2 declarative app runtime
+- `aac39d1` fix: complete phase 0-2 lifecycle, identity, and TTL acceptance gaps
+- `0e85611` / `7c6f5f7` / `a05d782` fix: CI lint 与测试对齐修复
+- `26925b9` ci: upgrade Go toolchain to 1.26.9 for net/http security fixes
+- `2ebb1d4` ci: pin govulncheck to v1.7.0 for Go 1.25 toolchain
+- `a586570` fix: resolve gosec v2.29 taint findings and harden static site server
+- `658ca44` ci: run real-daemon Docker E2E on ubuntu runners
+- `ed06fce` chore: 清理误提交的覆盖率产物并整理过时文档
+
+### 主要内容
+
+- 声明式运行时（`dzjjy/v1`）：`apply` / `validate` 命令、严格 YAML 解析、未知字段拒绝。
+- 运行后端：`process`（默认）与受控 `docker` template（Python 3.12 / Node 22 / Go 1.24）。
+- `StaticSite`：独立端口静态服务，支持 SPA fallback 与路径穿越防护。
+- 生命周期：绝对 TTL 调度、`expired` 终态、手动 restart 重算 TTL、服务重启后按 `expires_at` 重建调度。
+- 可靠性：进程身份校验（Linux `/proc` 起始时间、Windows 父 PID）、跨平台进程树终止、崩溃/重启耗尽终态事件。
+- 测试：真实 Docker daemon E2E（`docker_e2e` 构建标签）、Phase 0-2 关键回归场景。
+
+### 发布前门禁
+
+与 `CI` workflow 保持一致：
+
+```bash
+go build ./...
+go vet ./...
+go test -race ./...
+golangci-lint run --timeout 5m
+govulncheck ./...
+gosec -exclude=G703 ./...
+```
+
+> `gosec` 必须带 `-exclude=G703`，理由见 `ci.yml` 中的注释；`release.yml` 已同步该参数。
 
 ## 相关文件
 
