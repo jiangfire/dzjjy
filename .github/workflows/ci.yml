@@ -109,22 +109,24 @@ jobs:
           cache: true
 
       # Install gVisor's runsc and register it with the Docker daemon, then
-      # exercise the Phase 3 isolator path against a real container. The tests
-      # skip themselves when runsc is absent, so this job failing means gVisor
-      # broke rather than silently losing coverage.
+      # exercise the Phase 3 isolator path against a real container.
+      #
+      # gVisor moved to a multi-file release in 2026: runsc and the shim are no
+      # longer downloadable individually and runsc needs the sibling gvisor-bin/
+      # directory at runtime, so the official tarball is the supported install.
+      # See https://gvisor.dev/docs/user_guide/install
       - name: Install gVisor runsc
         run: |
           set -euo pipefail
           ARCH="$(uname -m)"
-          case "${ARCH}" in
-            x86_64) GV_ARCH=amd64 ;;
-            aarch64) GV_ARCH=arm64 ;;
-            *) echo "unsupported runner architecture ${ARCH}"; exit 1 ;;
-          esac
-          curl -fsSL -o /tmp/runsc "https://storage.googleapis.com/gvisor/releases/release/latest/${GV_ARCH}/runsc"
-          curl -fsSL -o /tmp/containerd-shim-runsc-v1 "https://storage.googleapis.com/gvisor/releases/release/latest/${GV_ARCH}/containerd-shim-runsc-v1"
-          sudo install -m 0755 /tmp/runsc /usr/local/bin/runsc
-          sudo install -m 0755 /tmp/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
+          URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
+          curl -fsSL -o /tmp/gvisor.tar.zstd "${URL}/gvisor.tar.zstd"
+          curl -fsSL -o /tmp/gvisor.tar.zstd.sha512 "${URL}/gvisor.tar.zstd.sha512"
+          cd /tmp
+          sha512sum -c gvisor.tar.zstd.sha512
+          sudo mkdir -p /usr/local/bin
+          sudo tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
+          sudo chmod 0755 /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1
           sudo tee /etc/docker/daemon.json > /dev/null <<'JSON'
           {
             "runtimes": {
@@ -136,7 +138,7 @@ jobs:
           JSON
           sudo systemctl restart docker
           for _ in $(seq 1 30); do
-            if docker info --format '{{json .Runtimes}}' | grep -q runsc; then
+            if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q runsc; then
               echo "runsc runtime registered"
               docker info --format '{{json .Runtimes}}'
               exit 0
@@ -146,6 +148,14 @@ jobs:
           echo "runsc runtime was not registered in time" >&2
           docker info --format '{{json .Runtimes}}' >&2 || true
           exit 1
+
+      # A container can only start when the sidecar binaries shipped in
+      # gvisor-bin/ are found next to runsc; prove that before running E2E.
+      - name: Smoke test runsc
+        run: |
+          set -euo pipefail
+          docker run --rm --runtime=runsc python:3.12-slim \
+            python -c "print('runsc works')"
 
       - name: Run gVisor E2E
         run: go test -tags=docker_e2e -timeout 25m -v -run 'TestE2EIsolator|TestE2EResourceLimit' ./internal/server/dockerbackend/...
