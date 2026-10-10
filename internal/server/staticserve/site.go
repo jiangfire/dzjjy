@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Site struct {
@@ -33,7 +34,10 @@ func Start(bindAddress, root string, port int) (*Site, error) {
 	site := &Site{root: absRoot, listener: listener}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", site.serveFile)
-	site.server = &http.Server{Handler: mux}
+	site.server = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() { _ = site.server.Serve(listener) }()
 	return site, nil
 }

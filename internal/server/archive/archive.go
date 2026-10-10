@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,7 +140,10 @@ func extractZip(archivePath, destDir string, state *extractionState) error {
 			}
 			continue
 		}
-		if err := state.reserveFile(int64(entry.UncompressedSize64)); err != nil {
+		if entry.UncompressedSize64 > math.MaxInt64 {
+			return fmt.Errorf("archive entry %q: invalid uncompressed size", entry.Name)
+		}
+		if err := state.reserveFile(int64(entry.UncompressedSize64)); err != nil { // #nosec G115 -- bounded by the MaxInt64 check above
 			return fmt.Errorf("archive entry %q: %w", entry.Name, err)
 		}
 		if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {

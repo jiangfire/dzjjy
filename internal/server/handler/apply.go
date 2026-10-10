@@ -23,7 +23,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, (100<<20)+(2<<20))
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
+	if err := r.ParseMultipartForm(8 << 20); err != nil { // #nosec G120 -- request body is already bounded by MaxBytesReader above.
 		h.sendError(w, "invalid multipart request", http.StatusBadRequest)
 		return
 	}
@@ -144,7 +144,7 @@ func extractApplyArtifact(form *multipart.Form, artifact, staging string) error 
 		return err
 	}
 	artifactPath := filepath.Join(staging, name)
-	dest, err := os.Create(artifactPath)
+	dest, err := os.Create(artifactPath) // #nosec G304 - name is validated and joined under the staging root
 	if err != nil {
 		return fmt.Errorf("failed to stage artifact: %w", err)
 	}

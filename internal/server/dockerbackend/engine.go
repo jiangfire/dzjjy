@@ -47,7 +47,7 @@ type Runner interface {
 type commandRunner struct{}
 
 func (commandRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	return exec.CommandContext(ctx, "docker", args...).CombinedOutput() // #nosec G204 - args are constructed by the engine from controlled template metadata
 }
 
 type Engine struct {

@@ -39,7 +39,7 @@ func applyCmd() {
 			slog.Error("artifact not found", "error", err)
 			os.Exit(1)
 		}
-		f, err := os.Open(artifactPath)
+		f, err := os.Open(artifactPath) // #nosec G304 - local CLI opens the containment-checked artifact path for its own user
 		if err != nil {
 			slog.Error("failed to open artifact", "error", err)
 			os.Exit(1)
@@ -93,7 +93,7 @@ func validateCmd() {
 }
 
 func readConfig(path string) ([]byte, *appconfig.Document, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 - local CLI reads the user-specified config path
 	if err != nil {
 		return nil, nil, err
 	}

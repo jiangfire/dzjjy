@@ -306,14 +306,14 @@ func (m *Manager) startProcess() error {
 		}
 		if len(m.config.Command) > 0 {
 			if os.PathSeparator == '\\' && (strings.EqualFold(filepath.Ext(executablePath), ".bat") || strings.EqualFold(filepath.Ext(executablePath), ".cmd")) {
-				cmd = exec.CommandContext(m.ctx, "cmd.exe", append([]string{"/C", executablePath}, command...)...)
+				cmd = exec.CommandContext(m.ctx, "cmd.exe", append([]string{"/C", executablePath}, command...)...) // #nosec G204 - executable path validated by isValidExecutable above
 			} else {
-				cmd = exec.CommandContext(m.ctx, executablePath, command...)
+				cmd = exec.CommandContext(m.ctx, executablePath, command...) // #nosec G204 - executable path validated by isValidExecutable above
 			}
 		} else if m.config.Args != "" {
-			cmd = exec.CommandContext(m.ctx, executablePath, strings.Fields(m.config.Args)...)
+			cmd = exec.CommandContext(m.ctx, executablePath, strings.Fields(m.config.Args)...) // #nosec G204 - executable path validated by isValidExecutable above
 		} else {
-			cmd = exec.CommandContext(m.ctx, executablePath)
+			cmd = exec.CommandContext(m.ctx, executablePath) // #nosec G204 - executable path validated by isValidExecutable above
 		}
 	case TypeRuntime:
 		// entry 可以包含多个参数，如 "-jar app.jar" 或 "-m module"
