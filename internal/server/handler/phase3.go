@@ -142,28 +142,59 @@ func (h *Handler) exposureToken(appName string, document *appconfig.Document, ex
 	return token, nil
 }
 
+// exposurePath renders the persisted/public form of an access token. The
+// state file and API always carry the full path without a trailing slash, so
+// there is exactly one on-the-wire representation.
+func exposurePath(token string) string {
+	if token == "" {
+		return ""
+	}
+	return proxy.TokenPrefix + token
+}
+
+// bareToken converts a stored exposure path back into the proxy key. It
+// tolerates a value that is already a bare token so restored or hand-edited
+// state cannot break routing.
+func bareToken(stored string) string {
+	if stored == "" {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(stored, proxy.TokenPrefix), "/")
+}
+
 // publishSite registers a StaticSite with the token proxy and returns the URL.
 func (h *Handler) publishSite(appName string, document *appconfig.Document, site *staticserve.Site, generation uint64, existing string) (string, error) {
-	if document.Spec.Exposure == nil {
-		return "", nil
-	}
-	token, err := h.exposureToken(appName, document, existing)
-	if err != nil {
-		return "", err
-	}
-	server, err := h.ensureProxy()
-	if err != nil {
-		return "", err
-	}
-	upstream := &siteUpstream{site: site}
-	if err := server.Register(token, proxy.Target{AppName: appName, Generation: generation, Upstream: upstream}); err != nil {
-		return "", err
-	}
 	timeout := idleTimeout(document)
+	token := bareToken(existing)
+	if document.Spec.Exposure != nil {
+		resolved, err := h.exposureToken(appName, document, token)
+		if err != nil {
+			return "", err
+		}
+		token = resolved
+		server, err := h.ensureProxy()
+		if err != nil {
+			return "", err
+		}
+		upstream := &siteUpstream{site: site}
+		if err := server.Register(token, proxy.Target{AppName: appName, Generation: generation, Upstream: upstream}); err != nil {
+			return "", err
+		}
+	}
 	if timeout > 0 {
 		h.idleTracker.Schedule(appName, generation, timeout)
 	}
-	return fmt.Sprintf("%s%s/", proxy.TokenPrefix, token), nil
+	h.rememberIdleApp(appName, idleAppRecord{
+		generation: generation,
+		backend:    "static",
+		workPath:   site.Root(),
+		timeout:    timeout,
+		token:      token,
+	})
+	if token == "" {
+		return "", nil
+	}
+	return exposurePath(token) + "/", nil
 }
 
 // siteUpstream adapts a StaticSite to the proxy upstream interface.
@@ -201,17 +232,49 @@ func (h *Handler) idleTimeoutFor(appName string) time.Duration {
 	return time.Duration(app.IdleTimeoutSeconds) * time.Second
 }
 
+// rememberIdleApp records the facts an idle transition needs, so suspend and
+// resume keep working when the server runs without a state store.
+func (h *Handler) rememberIdleApp(appName string, record idleAppRecord) {
+	h.idleAppsMu.Lock()
+	h.idleApps[appName] = record
+	h.idleAppsMu.Unlock()
+}
+
+// forgetIdleApp drops an app from the idle registry.
+func (h *Handler) forgetIdleApp(appName string) {
+	h.idleAppsMu.Lock()
+	delete(h.idleApps, appName)
+	h.idleAppsMu.Unlock()
+}
+
+// lookupIdleApp reads the in-memory idle record.
+func (h *Handler) lookupIdleApp(appName string) (idleAppRecord, bool) {
+	h.idleAppsMu.Lock()
+	defer h.idleAppsMu.Unlock()
+	record, ok := h.idleApps[appName]
+	return record, ok
+}
+
 // suspendIdleApp stops an app that has been idle for too long. Suspension is
 // reversible: the artifact stays on disk and the next request restarts it.
 func (h *Handler) suspendIdleApp(appName string, generation uint64) error {
-	if h.syncManager == nil {
+	record, known := h.lookupIdleApp(appName)
+	if !known {
 		return nil
 	}
-	app := h.syncManager.GetState().Apps[appName]
-	if app == nil || app.Generation != generation || app.Status != state.StatusRunning {
+	// A stale callback must never touch a restarted app.
+	if record.generation != generation {
 		return nil
 	}
-	switch app.Backend {
+	backend := record.backend
+	if h.syncManager != nil {
+		app := h.syncManager.GetState().Apps[appName]
+		if app == nil || app.Generation != generation || app.Status != state.StatusRunning {
+			return nil
+		}
+		backend = app.Backend
+	}
+	switch backend {
 	case "static":
 		h.sitesMu.Lock()
 		site, ok := h.sites[appName]
@@ -222,30 +285,42 @@ func (h *Handler) suspendIdleApp(appName string, generation uint64) error {
 			_ = site.Close()
 		}
 	case "docker":
-		if app.ContainerID != "" {
+		containerID := ""
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[appName]; app != nil {
+				containerID = app.ContainerID
+			}
+		}
+		if containerID != "" && h.dockerEngine != nil {
 			// Pause rather than remove so the container can be resumed.
-			if err := h.dockerEngine.Pause(context.Background(), app.ContainerID); err != nil {
+			if err := h.dockerEngine.Pause(context.Background(), containerID); err != nil {
 				slog.Warn("failed to pause idle container", "app", appName, "error", err)
 			}
 		}
 	}
-	// The suspended flag is recorded even when no live listener or container
-	// was found, so the state stays consistent with what the caller observed.
-	app.Status = state.StatusStopped
-	app.Suspended = true
-	app.Port = 0
-	app.TerminationReason = "idle"
-	h.syncManager.ReplaceApp(appName, app)
-	h.persistState()
+	if h.syncManager != nil {
+		app := h.syncManager.GetState().Apps[appName]
+		if app != nil {
+			app.Status = state.StatusStopped
+			app.Suspended = true
+			app.Port = 0
+			app.TerminationReason = "idle"
+			h.syncManager.ReplaceApp(appName, app)
+			h.persistState()
+		}
+	}
+	h.idleAppsMu.Lock()
+	if current, ok := h.idleApps[appName]; ok && current.generation == generation {
+		current.suspended = true
+		h.idleApps[appName] = current
+	}
+	h.idleAppsMu.Unlock()
 	return nil
 }
 
 // resumeSuspendedApp restarts an app that was suspended for idleness. It is
 // called by the proxy before traffic is forwarded.
 func (h *Handler) resumeSuspendedApp(appName string, generation uint64) error {
-	if h.syncManager == nil {
-		return nil
-	}
 	h.resumeMu.Lock()
 	if h.resuming[appName] {
 		h.resumeMu.Unlock()
@@ -259,58 +334,99 @@ func (h *Handler) resumeSuspendedApp(appName string, generation uint64) error {
 		h.resumeMu.Unlock()
 	}()
 
-	app := h.syncManager.GetState().Apps[appName]
-	if app == nil || !app.Suspended || app.Generation != generation {
+	record, known := h.lookupIdleApp(appName)
+	if !known || !record.suspended || record.generation != generation {
 		return nil
 	}
-	if app.WorkPath == "" {
+	workPath := record.workPath
+	token := record.token
+	if h.syncManager != nil {
+		app := h.syncManager.GetState().Apps[appName]
+		if app == nil || !app.Suspended || app.Generation != generation {
+			return nil
+		}
+		workPath = app.WorkPath
+		token = app.ExposureToken
+	}
+	if workPath == "" {
 		return fmt.Errorf("app %q has no artifact to resume", appName)
 	}
-	if _, err := os.Stat(app.WorkPath); err != nil {
+	if _, err := os.Stat(workPath); err != nil {
 		return fmt.Errorf("artifact for %q is unavailable: %w", appName, err)
 	}
-	switch app.Backend {
+	switch record.backend {
 	case "static":
-		site, err := staticserve.Start("0.0.0.0", app.WorkPath, 0)
+		site, err := staticserve.Start("0.0.0.0", workPath, 0)
 		if err != nil {
 			return err
 		}
 		h.sitesMu.Lock()
 		h.sites[appName] = site
 		h.sitesMu.Unlock()
-		if app.ExposureToken != "" {
+		token = bareToken(token)
+		if token != "" {
 			if server, err := h.ensureProxy(); err == nil {
-				_ = server.Register(app.ExposureToken, proxy.Target{
+				_ = server.Register(token, proxy.Target{
 					AppName:    appName,
-					Generation: app.Generation,
+					Generation: generation,
 					Upstream:   &siteUpstream{site: site},
 				})
 			}
 		}
-		app.Port = site.Port()
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[appName]; app != nil {
+				app.Status = state.StatusRunning
+				app.Suspended = false
+				app.Port = site.Port()
+				app.TerminationReason = ""
+				app.LastActivityUnix = time.Now().Unix()
+				h.syncManager.ReplaceApp(appName, app)
+				h.persistState()
+			}
+		}
 	case "docker":
-		if app.ContainerID == "" {
+		if h.dockerEngine == nil {
+			return fmt.Errorf("app %q has no docker engine", appName)
+		}
+		containerID := ""
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[appName]; app != nil {
+				containerID = app.ContainerID
+			}
+		}
+		if containerID == "" {
 			return fmt.Errorf("app %q has no container to resume", appName)
 		}
 		// A suspended container is paused, not stopped.
-		if err := h.dockerEngine.Unpause(context.Background(), app.ContainerID); err != nil {
+		if err := h.dockerEngine.Unpause(context.Background(), containerID); err != nil {
 			return err
 		}
-		// The container keeps the ports it was published with, so restore the
-		// primary host port for status reporting.
-		if len(app.PublishedPorts) > 0 && app.Port == 0 {
-			app.Port = app.PublishedPorts[0].Host
+		if h.syncManager != nil {
+			if app := h.syncManager.GetState().Apps[appName]; app != nil {
+				app.Status = state.StatusRunning
+				app.Suspended = false
+				app.TerminationReason = ""
+				app.LastActivityUnix = time.Now().Unix()
+				// The container keeps the ports it was published with.
+				if len(app.PublishedPorts) > 0 && app.Port == 0 {
+					app.Port = app.PublishedPorts[0].Host
+				}
+				h.syncManager.ReplaceApp(appName, app)
+				h.persistState()
+			}
 		}
+	default:
+		return nil
 	}
-	app.Status = state.StatusRunning
-	app.Suspended = false
-	app.TerminationReason = ""
-	app.LastActivityUnix = time.Now().Unix()
-	h.syncManager.ReplaceApp(appName, app)
-	h.persistState()
 
-	if timeout := h.idleTimeoutFor(appName); timeout > 0 {
-		h.idleTracker.Schedule(appName, app.Generation, timeout)
+	h.idleAppsMu.Lock()
+	if current, ok := h.idleApps[appName]; ok && current.generation == generation {
+		current.suspended = false
+		h.idleApps[appName] = current
+	}
+	h.idleAppsMu.Unlock()
+	if record.timeout > 0 {
+		h.idleTracker.Schedule(appName, generation, record.timeout)
 	}
 	return nil
 }

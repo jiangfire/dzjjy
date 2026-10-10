@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/jiangfire/dzjjy/internal/server/proxy"
 	"github.com/jiangfire/dzjjy/internal/server/state"
 	"github.com/jiangfire/dzjjy/internal/server/staticserve"
 )
@@ -15,12 +13,13 @@ import (
 func (h *Handler) closeStaticSite(appName string, removeFiles bool) (bool, error) {
 	h.ttlScheduler.Cancel(appName)
 	h.idleTracker.Cancel(appName)
+	h.forgetIdleApp(appName)
 	h.proxyMu.Lock()
 	proxyServer := h.proxyServer
 	h.proxyMu.Unlock()
 	if proxyServer != nil && h.syncManager != nil {
 		if app := h.syncManager.GetState().Apps[appName]; app != nil && app.ExposureToken != "" {
-			proxyServer.Unregister(strings.TrimPrefix(app.ExposureToken, proxy.TokenPrefix))
+			proxyServer.Unregister(bareToken(app.ExposureToken))
 		}
 	}
 	h.sitesMu.Lock()

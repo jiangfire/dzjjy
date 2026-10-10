@@ -44,10 +44,24 @@ type Handler struct {
 	// Phase 3 controls.
 	secrets     *secretstore.Store
 	idleTracker *idle.Tracker
+	// idleApps mirrors the idle-relevant facts of every scheduled app so that
+	// suspend and resume work even when no state store is configured.
+	idleAppsMu  sync.Mutex
+	idleApps    map[string]idleAppRecord
 	proxyMu     sync.Mutex
 	proxyServer *proxy.Proxy
 	resumeMu    sync.Mutex
 	resuming    map[string]bool
+}
+
+// idleAppRecord is the in-memory view an idle transition needs.
+type idleAppRecord struct {
+	generation uint64
+	backend    string
+	workPath   string
+	timeout    time.Duration
+	token      string
+	suspended  bool
 }
 
 // NewHandler 创建处理器（不带状态持久化）
@@ -56,7 +70,7 @@ func NewHandler(uploadDir, workDir, logDir string) *Handler {
 		multiManager: runtime.NewMultiManager(logDir), uploadDir: uploadDir,
 		workDir: workDir, logDir: logDir, sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
 		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
-		secrets: secretstore.New(nil), resuming: make(map[string]bool),
+		secrets: secretstore.New(nil), resuming: make(map[string]bool), idleApps: make(map[string]idleAppRecord),
 	}
 	h.idleTracker = idle.New(nil, h.suspendIdleApp)
 	return h
@@ -68,7 +82,7 @@ func NewHandlerWithState(uploadDir, workDir, logDir, stateFile string) *Handler 
 		uploadDir: uploadDir, workDir: workDir, logDir: logDir,
 		sites: make(map[string]*staticserve.Site), dockerApps: make(map[string]dockerAppRecord),
 		ttlScheduler: ttl.New(), dockerEngine: dockerbackend.NewEngine(),
-		secrets: secretstore.New(nil), resuming: make(map[string]bool),
+		secrets: secretstore.New(nil), resuming: make(map[string]bool), idleApps: make(map[string]idleAppRecord),
 	}
 	h.idleTracker = idle.New(nil, h.suspendIdleApp)
 	h.stateStore = state.NewStateStore(stateFile)

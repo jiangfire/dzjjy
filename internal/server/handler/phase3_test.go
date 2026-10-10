@@ -104,6 +104,11 @@ func TestSuspendAndResumeStaticSite(t *testing.T) {
 		Backend: "static", Generation: 2, Status: state.StatusRunning,
 		WorkPath: root, IdleTimeoutSeconds: 60,
 	})
+	// apply and restore both populate this registry; the idle transition is
+	// driven from it rather than from state alone.
+	h.rememberIdleApp("web", idleAppRecord{
+		generation: 2, backend: "static", workPath: root, timeout: time.Minute,
+	})
 
 	require.NoError(t, h.suspendIdleApp("web", 2))
 	app := h.syncManager.GetState().Apps["web"]
@@ -122,9 +127,11 @@ func TestSuspendAndResumeStaticSite(t *testing.T) {
 
 func TestSuspendIsIgnoredForStaleGeneration(t *testing.T) {
 	h := phase3Handler(t)
+	root := t.TempDir()
 	h.syncManager.ReplaceApp("web", &state.AppState{
-		Backend: "static", Generation: 5, Status: state.StatusRunning, WorkPath: t.TempDir(),
+		Backend: "static", Generation: 5, Status: state.StatusRunning, WorkPath: root,
 	})
+	h.rememberIdleApp("web", idleAppRecord{generation: 5, backend: "static", workPath: root})
 	require.NoError(t, h.suspendIdleApp("web", 1))
 	app := h.syncManager.GetState().Apps["web"]
 	require.NotNil(t, app)
@@ -134,9 +141,11 @@ func TestSuspendIsIgnoredForStaleGeneration(t *testing.T) {
 
 func TestSuspendIsIgnoredForTerminalState(t *testing.T) {
 	h := phase3Handler(t)
+	root := t.TempDir()
 	h.syncManager.ReplaceApp("web", &state.AppState{
-		Backend: "static", Generation: 1, Status: state.StatusExpired, WorkPath: t.TempDir(),
+		Backend: "static", Generation: 1, Status: state.StatusExpired, WorkPath: root,
 	})
+	h.rememberIdleApp("web", idleAppRecord{generation: 1, backend: "static", workPath: root})
 	require.NoError(t, h.suspendIdleApp("web", 1))
 	app := h.syncManager.GetState().Apps["web"]
 	require.NotNil(t, app)
@@ -149,6 +158,9 @@ func TestResumeFailsWhenArtifactIsGone(t *testing.T) {
 		Backend: "static", Generation: 1, Status: state.StatusStopped, Suspended: true,
 		WorkPath: filepath.Join(t.TempDir(), "removed"),
 	})
+	h.rememberIdleApp("web", idleAppRecord{
+		generation: 1, backend: "static", workPath: filepath.Join(t.TempDir(), "removed"), suspended: true,
+	})
 	err := h.resumeSuspendedApp("web", 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "artifact")
@@ -160,7 +172,11 @@ func TestResumeGeneratesTokenWhenSiteIsExposed(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "index.html"), []byte("<h1>hi</h1>"), 0600))
 	h.syncManager.ReplaceApp("web", &state.AppState{
 		Backend: "static", Generation: 1, Status: state.StatusStopped, Suspended: true,
-		WorkPath: root, ExposureToken: "0123456789abcdef0123456789abcdef",
+		WorkPath: root, ExposureToken: "/_dzjjy/0123456789abcdef0123456789abcdef",
+	})
+	h.rememberIdleApp("web", idleAppRecord{
+		generation: 1, backend: "static", workPath: root,
+		token: "0123456789abcdef0123456789abcdef", suspended: true,
 	})
 
 	require.NoError(t, h.resumeSuspendedApp("web", 1))

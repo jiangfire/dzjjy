@@ -98,9 +98,16 @@ func (h *Handler) restoreStaticSites(data *state.StateData) {
 		h.sitesMu.Lock()
 		h.sites[appName] = site
 		h.sitesMu.Unlock()
-		if app.ExposureToken != "" {
+		h.rememberIdleApp(appName, idleAppRecord{
+			generation: app.Generation,
+			backend:    "static",
+			workPath:   app.WorkPath,
+			timeout:    time.Duration(app.IdleTimeoutSeconds) * time.Second,
+			token:      bareToken(app.ExposureToken),
+		})
+		if token := bareToken(app.ExposureToken); token != "" {
 			if server, err := h.ensureProxy(); err == nil {
-				_ = server.Register(app.ExposureToken, proxy.Target{
+				_ = server.Register(token, proxy.Target{
 					AppName:    appName,
 					Generation: app.Generation,
 					Upstream:   &siteUpstream{site: site},
@@ -143,6 +150,12 @@ func (h *Handler) restoreDockerApps(data *state.StateData) {
 		h.dockerMu.Lock()
 		h.dockerApps[appName] = dockerAppRecord{containerID: app.ContainerID, root: app.WorkPath, generation: app.Generation}
 		h.dockerMu.Unlock()
+		h.rememberIdleApp(appName, idleAppRecord{
+			generation: app.Generation,
+			backend:    "docker",
+			workPath:   app.WorkPath,
+			timeout:    time.Duration(app.IdleTimeoutSeconds) * time.Second,
+		})
 		if app.IdleTimeoutSeconds > 0 {
 			h.idleTracker.Schedule(appName, app.Generation, time.Duration(app.IdleTimeoutSeconds)*time.Second)
 		}

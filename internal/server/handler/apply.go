@@ -71,8 +71,15 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 			h.sitesMu.Unlock()
 			if site != nil {
 				generation, expiresAt := app.Generation, app.ExpiresAt
+				data := map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running", "port": site.Port(), "generation": generation, "expires_at": expiresAt}
+				// An idempotent re-apply must still report the public path,
+				// otherwise the caller loses the URL of an already published
+				// site every time it re-applies the same configuration.
+				if app.ExposureToken != "" {
+					data["public_path"] = strings.TrimSuffix(app.ExposureToken, "/") + "/"
+				}
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "configuration applied", "data": map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running", "port": site.Port(), "generation": generation, "expires_at": expiresAt}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "configuration applied", "data": data})
 				return
 			}
 		}
@@ -122,20 +129,20 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	generation, expiresAt := h.recordStaticSite(document, staging, site.Port())
 	response := map[string]any{"app_name": document.Metadata.Name, "kind": document.Kind, "status": "running", "port": site.Port(), "generation": generation, "expires_at": expiresAt}
-	// A site with spec.exposure is published behind the token proxy so the raw
-	// port is not the way people reach it.
-	if document.Spec.Exposure != nil {
-		h.proxyMu.Lock()
-		previous := ""
+	// Publish the site behind the token proxy when spec.exposure is configured,
+	// and record its idle window either way.
+	previous := ""
+	if h.syncManager != nil {
 		if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil {
 			previous = app.ExposureToken
 		}
-		h.proxyMu.Unlock()
-		publicPath, err := h.publishSite(document.Metadata.Name, document, site, generation, previous)
-		if err != nil {
-			h.sendError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	}
+	publicPath, err := h.publishSite(document.Metadata.Name, document, site, generation, previous)
+	if err != nil {
+		h.sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if publicPath != "" {
 		if h.syncManager != nil {
 			if app := h.syncManager.GetState().Apps[document.Metadata.Name]; app != nil {
 				app.ExposureToken = strings.TrimSuffix(publicPath, "/")

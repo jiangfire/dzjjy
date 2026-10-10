@@ -125,6 +125,13 @@ func (h *Handler) applyDocker(w http.ResponseWriter, r *http.Request, document *
 		idleSeconds = int(timeout.Seconds())
 		h.idleTracker.Schedule(document.Metadata.Name, generation, timeout)
 	}
+	h.rememberIdleApp(document.Metadata.Name, idleAppRecord{
+		generation: generation,
+		backend:    "docker",
+		workPath:   appDir,
+		timeout:    idleTimeout(document),
+		token:      "",
+	})
 	if h.syncManager != nil {
 		h.syncManager.ReplaceApp(document.Metadata.Name, &state.AppState{
 			DesiredConfig: string(canonical), Generation: generation, Backend: "docker",
@@ -156,6 +163,7 @@ func (h *Handler) sendApplyDockerResult(w http.ResponseWriter, document *appconf
 func (h *Handler) stopDockerApp(appName, reason string, removeFiles bool) (bool, error) {
 	h.ttlScheduler.Cancel(appName)
 	h.idleTracker.Cancel(appName)
+	h.forgetIdleApp(appName)
 	h.dockerMu.Lock()
 	record, ok := h.dockerApps[appName]
 	if ok {
